@@ -1,10 +1,12 @@
 <script setup>
 import HelloWorld from './components/HelloWorld.vue'
+import GameView from './components/GameView.vue'
 </script>
 
 <template>
-  <HelloWorld msg="Vite + Vue" />
-  <h1>asdf asdf asd fasdf</h1>
+  <!-- <HelloWorld msg="Vite + Vue" /> -->
+  <!-- <h1>asdf asdf asd fasdf</h1> -->
+  <GameView />
 </template>
 
 <style scoped>
