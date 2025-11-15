@@ -15,13 +15,20 @@ export default {
 			username: null,
 			requestedUsername: "",
 			userList: [],
-			requestedRoomName: ""
+			requestedRoomName: "",
+			worldData: {}
 		};
 	},
 	methods: {
 		sendText() {
-			socket.emit("sendChat", this.inputText);
-			this.inputText = "";
+			// socket.emit("sendChat", this.inputText);
+			socket.emit("sendCommand", this.inputText, (success, msg) => {
+				if (success)
+					this.inputText = "";
+				else {
+					this.chatHistory.push(msg);
+				}
+			});
 		},
 		requestUsername() {
 			socket.emit("sendUsername", this.requestedUsername, (usernameValid, previousChatMessages) => {
@@ -56,10 +63,15 @@ export default {
 		socket.on("messageSent", (chatMessage) => {
 			this.chatHistory.push(chatMessage);
 		});
+		socket.on("commandResponse", (chatMessage) => {
+			this.chatHistory.push(chatMessage);
+		});
 		socket.on("updateUserList", (userList) => {
 			this.userList = userList;
 		});
-
+		socket.on("updateGameWorld", (worldData) => {
+			this.worldData = worldData;
+		})
 	}
 }
 </script>

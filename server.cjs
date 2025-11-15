@@ -8,10 +8,6 @@ var socketio = require("socket.io");
 var io = socketio(server);
 app.use(express.static("pub"));
 
-//On the server side, you also need to do:
-//	npm install express
-//	npm install socket.io
-
 let messages = []; //a full list of all chat made on this server
 let roomMessages = {}; // a list of chats made on specific room
 
@@ -20,6 +16,37 @@ let nouns = ["Programmer", "Developer", "Web dev", "Student", "Person"];
 
 const MAX_USERS_PER_ROOM = 4;
 
+// This is the initial game data that each server-room starts with:
+const INITIAL_WORLD_DATA = [
+	{
+		name: 'kitchen',
+		description: 'You are standing in a kitchen. There is a refridgerator here. There is a door to the north leading outside.',
+		exits: [
+			{
+				name: 'outside',
+				direction: 'north'
+			}
+		],
+		interactable: [
+			{
+				name: 'fridge',
+				description: 'It is a refridgerator with two doors, a freezer being on the bottom'
+			}
+		]
+	},
+	{
+		name: 'outside',
+		description: 'You are outside. There is a door to the south leading to the kitchen',
+		exits: [
+			{
+				name: 'kitchen',
+				direction: 'south'
+			}
+		]
+	}
+];
+
+let rooms = [];
 
 function randomFromList(list) {
 	let i = Math.floor(Math.random() * list.length);
@@ -35,20 +62,18 @@ function mapSocketsToUsernames(socketList) {
 	return ret;
 }
 
+function updateGameWorld(roomName) {
+	let currentRoom = rooms.find(r => r.name === roomName);
+	io.to(roomName).emit("updateGameWorld", currentRoom);
+}
 
-/**
- * TODO:
- * When the user gives a room name, make a new room.
- * Each room could be an object that contains the world/game state.
- * This room object would start with some default data and would be sent to the user on join.
- */
+let verbs = ['l', 'look', 'examine', 'north', 'n', 'south', 's', 'east', 'e', 'west',
+	'w', 'up', 'u', 'down', 'd', 'get', 'grab', 'take', 'drop', 'use', 'attack', 'hit',
+	'read', 'eat', 'drink', 'throw', 'jump', 'sit', 'whisper', 'say', 'yell', 'talk',
+	'speak', 'open', 'close', 'put', 'place', 'set', 'unlock', 'lock', 'turn',
+	'help', 'h',]; // Make sure to handle "look at"
 
-let rooms = [
-	// {
-	// 	name: 'testRoom',
-	// 	users: []
-	// }
-];
+let prepositions = ['with', 'at', 'on', 'in', 'to'];
 
 //Every time a client connects (visits the page) this function(socket) {...} gets executed.
 //The socket is a different object each time a new client connects.
@@ -85,6 +110,53 @@ io.on("connection", function(socket) {
 		socket.data.roomName = null;
 	}
 
+	function parseCommand(command) {
+		/**
+		 * TODO: Make a command parser
+		 * 
+		 * examples:
+		 * 		look, l
+		 * 		get item, get bottle
+		 * 		open door, open window
+		 * 		north, n, south, s
+		 * 		drop item, drop book
+		 * 		attack enemy
+		 * 		use key on door
+		 *
+		 * This should allow synonyms like "take" instead of "get"
+		 * I'm not sure how hard it would be to make more complex commands for
+		 * things like keys and doors "attack enemy with sword"
+		 * Maybe items could have unique behaviors corresponding to the commands that were tried on them?
+		 * Will we have realtime things going on besides the players?
+		 */
+
+		// Split the command by spaces into an array
+		let words = command.split(" ");
+		let verb = '';
+		let object = '';
+		let preposition = '';
+		let secondaryObject = '';
+
+		// Find the verb
+		for (word of words) {
+			if (prepositions.includes(word)) {
+
+			}
+			if (verbs.includes(word)) {
+				verb = word;
+			}
+		}
+
+		let response = '';
+		if (['l', 'look'].includes(verb)) {
+			let currentRoom = rooms.find(r => r.name === socket.data.roomName);
+			response = currentRoom.gameRooms[0].description;
+		} else {
+			response = "I didn't understand that.";
+		}
+
+		socket.emit('commandResponse', response);
+	}
 
 	socket.on("disconnect", function() {
 		//This particular socket connection was terminated (probably the client went to a different page
@@ -141,18 +213,20 @@ io.on("connection", function(socket) {
 
 		let roomToJoin = rooms.filter(room => room.name == roomName)[0];
 		if (roomToJoin) {
-			if (roomToJoin.users.length >= MAX_USERS_PER_ROOM) {
+			if (roomToJoin?.users?.length >= MAX_USERS_PER_ROOM) {
 				callback(false, "That room is full!");
 				return;
 			}
 
-			roomToJoin.users.push(socket);
+			roomToJoin.users.push(socket.data.name);
 			// console.log(roomToJoin.users.map(socket => socket.data.name));
 		} else {
+			// Note the difference between a server room and a game room
 			let newRoom = {
 				name: roomName,
-				users: [socket]
-			}
+				gameRooms: structuredClone(INITIAL_WORLD_DATA),
+				users: [socket.data.name]
+			};
 			rooms.push(newRoom);
 		}
 
@@ -162,6 +236,8 @@ io.on("connection", function(socket) {
 
 		// the "callback" below calls the method that the client side gave
 		callback(true, "Joined successfully");
+
+		updateGameWorld(roomName);
 	});
 
 	// Handle leave room request
@@ -195,6 +271,23 @@ io.on("connection", function(socket) {
 
 		const history = roomMessages[roomName] || [];
 		if (callback) callback(true, history);
+	});
+
+
+	socket.on("sendCommand", function(command, callback) {
+		const roomName = socket.data.roomName;
+		if (!roomName){
+			callback(false, "You are not in a room.");
+			return;
+		}
+
+		const room = rooms.find(r => r.name === roomName);
+		if (!room) {
+			callback(false, "Room not found.");
+			return;
+		}
+		parseCommand(command);
+		callback(true, "");
 	});
 
 
