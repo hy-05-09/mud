@@ -13,6 +13,7 @@ app.use(express.static("pub"));
 //	npm install socket.io
 
 let messages = []; //a full list of all chat made on this server
+let roomMessages = {}; // a list of chats made on specific room
 
 let adjectives = ["Best", "Happy", "Creepy", "Sappy"];
 let nouns = ["Programmer", "Developer", "Web dev", "Student", "Person"];
@@ -154,6 +155,11 @@ io.on("connection", function(socket) {
 			}
 			rooms.push(newRoom);
 		}
+
+		if (!roomMessages[roomName]){
+			roomMessages[roomName] = [];
+		}
+
 		// the "callback" below calls the method that the client side gave
 		callback(true, "Joined successfully");
 	});
@@ -168,13 +174,27 @@ io.on("connection", function(socket) {
 	});
 
 	socket.on("sendChat", function(chatMessage) {
+		let roomName = socket.data.roomName;
 		console.log(socket.rooms)
 		// let currentRoom = Array.from(socket.rooms)[0]; // The users can only be in one room at a time, so just take the first room that they are in
 		let currentRoom = socket.data.roomName;
 		let m = socket.data.name + " just said: " + chatMessage + " from room: " + currentRoom;
 		messages.push(m);
+		roomMessages[roomName].push(m);
 		console.log(m);
 		io.to(currentRoom).emit("messageSent", m);
+	});
+
+	//retrieve stored chat history for this room
+	socket.on("showChatHistory", function(callback){
+		const roomName = socket.data.roomName;
+		if (!roomName){
+			if (callback) callback(false, "You are not in a room.", []);
+			return;
+		}
+
+		const history = roomMessages[roomName] || [];
+		if (callback) callback(true, history);
 	});
 
 
