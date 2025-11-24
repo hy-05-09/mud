@@ -26,7 +26,7 @@ body {
   margin: 0;
   display: flex;
   place-items: center;
-  min-width: 320px;
+  /* min-width: 320px; */
   min-height: 100vh;
 }
 
@@ -83,7 +83,7 @@ button:active {
 
 #container {
   display: flex;
-  width: 100%;
+  /* width: 100%; */
   height: 50vw;
   margin: 0 auto;
   border: 2px solid white;
@@ -130,4 +130,16 @@ button:active {
 
 .clickable {
     cursor: pointer;
+}
+
+.chat-line {
+  white-space: pre-wrap;
+}
+
+.text-user {
+  color: #5ba9f3;
+}
+
+.text-message {
+  color: #a2f35b;
 }

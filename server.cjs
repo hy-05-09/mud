@@ -9,44 +9,78 @@ var io = socketio(server);
 app.use(express.static("pub"));
 
 let messages = []; //a full list of all chat made on this server
-let roomMessages = {}; // a list of chats made on specific room
+let lobbyMessages = {}; // a list of chats made on specific room
 
 let adjectives = ["Best", "Happy", "Creepy", "Sappy"];
 let nouns = ["Programmer", "Developer", "Web dev", "Student", "Person"];
 
-const MAX_USERS_PER_ROOM = 4;
+const MAX_USERS_PER_LOBBY = 4;
+
+const INITIAL_WORLD_START_ROOM = 'outside';
 
 // This is the initial game data that each server-room starts with:
 const INITIAL_WORLD_DATA = [
 	{
 		name: 'kitchen',
-		description: 'You are standing in a kitchen. There is a refridgerator here. There is a door to the north leading outside.',
+		description: 'You are standing in a kitchen with a table in the middle. There is a refrigerator here. There is a door to the north leading outside.',
 		exits: [
 			{
-				name: 'outside',
+				destination: 'outside',
 				direction: 'north'
+			},
+			{
+				destination: 'locked-room',
+				direction: 'east'
 			}
 		],
-		interactable: [
+		interactables: [
 			{
-				name: 'fridge',
-				description: 'It is a refridgerator with two doors, a freezer being on the bottom'
+				name: 'refrigerator',
+				altNames: ['fridge'],
+				description: 'It is a refrigerator with two doors, a freezer being on the bottom',
+				canGet: false,
+				listOnLook: false,
+			},
+			{
+				name: 'key',
+				description: 'It is an old key',
+				positionalPhrase: ' sitting on the table.', // This is used to describe where the object is in the room.
+				canGet: true,
+				listOnLook: true, // If this is true, the item will be tacked on to the room description
 			}
 		]
 	},
 	{
-		name: 'outside',
-		description: 'You are outside. There is a door to the south leading to the kitchen',
+		// TODO: this room should need to be unlocked with a key
+		name: 'locked-room',
+		description: 'You are in the room that used to be locked. TODO: make a description for this room',
 		exits: [
 			{
-				name: 'kitchen',
+				destination: 'kitchen',
+				direction: 'west'
+			}
+		],
+		interactables: []
+	},
+	{
+		name: 'outside',
+		description: 'You are outside. There is a door to the south leading to the kitchen.',
+		exits: [
+			{
+				destination: 'kitchen',
 				direction: 'south'
+			}
+		],
+		interactables: [
+			{
+				name: 'test object',
+				canGet: true,
 			}
 		]
 	}
 ];
 
-let rooms = [];
+let lobbies = [];
 
 function randomFromList(list) {
 	let i = Math.floor(Math.random() * list.length);
@@ -62,16 +96,11 @@ function mapSocketsToUsernames(socketList) {
 	return ret;
 }
 
-function updateGameWorld(roomName) {
-	let currentRoom = rooms.find(r => r.name === roomName);
-	io.to(roomName).emit("updateGameWorld", currentRoom);
-}
-
 let verbs = ['l', 'look', 'examine', 'north', 'n', 'south', 's', 'east', 'e', 'west',
 	'w', 'up', 'u', 'down', 'd', 'get', 'grab', 'take', 'drop', 'use', 'attack', 'hit',
 	'read', 'eat', 'drink', 'throw', 'jump', 'sit', 'whisper', 'say', 'yell', 'talk',
 	'speak', 'open', 'close', 'put', 'place', 'set', 'unlock', 'lock', 'turn',
-	'help', 'h',]; // Make sure to handle "look at"
+	'help', 'h', 'inventory', 'i']; // Make sure to handle "look at"
 
 let prepositions = ['with', 'at', 'on', 'in', 'to'];
 
@@ -85,32 +114,53 @@ io.on("connection", function(socket) {
 	socket.data.name = randomFromList(adjectives) +" "+ randomFromList(nouns);
 
 
-	// Leave the current room
-	function leaveRoomInternal(socket){
-		const roomName = socket.data.roomName;
-		if (!roomName) return;
+	// Leave the current lobby
+	function leaveLobbyInternal(socket){
+		const lobbyName = socket.data.lobbyName;
+		if (!lobbyName) return;
 
-		// Find room by name
-		const roomIndex = rooms.findIndex(r => r.name === roomName);
-		if (roomIndex === -1) {
-			socket.data.roomName = null;
+		// Find lobby by name
+		const lobbyIndex = lobbies.findIndex(r => r.name === lobbyName);
+		if (lobbyIndex === -1) {
+			socket.data.lobbyName = null;
 			return;
 		}
 
-		const room = rooms[roomIndex];
+		const lobby = lobbies[lobbyIndex];
 
-		// Remove this user from the room
-		room.users = room.users.filter(s => s.id !== socket.id);
+		// Remove this user from the lobby
+		lobby.users = lobby.users.filter(s => s.id !== socket.id);
 
-		socket.leave(roomName);
-		console.log(socket.data.name + " left " + roomName);
+		socket.leave(lobbyName);
+		console.log(socket.data.name + " left " + lobbyName);
+		io.to(socket.data.lobbyName).emit("userLeftLobby", socket.data.name);
 
-		// TODO (optional): If the room is empty, delete the room
+		// TODO (optional): If the lobby is empty, delete the lobby
 
-		socket.data.roomName = null;
+		socket.data.lobbyName = null;
 	}
 
-	function parseCommand(command) {
+	function getRoomDescription(room) {
+		let desc = room.description;
+		for (interactable of room.interactables ?? []) {
+			if (!interactable.listOnLook)
+				continue;
+			let firstLetterIsVowel = ['a', 'e', 'i', 'o', 'u'].includes(Array.from(interactable.name)[0]);
+			let positionalPhrase = ' on the ground.';
+			if (interactable.positionalPhrase && interactable.positionalPhrase != '')
+				positionalPhrase = interactable.positionalPhrase;
+			desc += "\nThere is a" + (firstLetterIsVowel ? 'n' : '') + " " + interactable.name + positionalPhrase;
+		}
+		return desc;
+	}
+
+	async function getSocketsInGameRoom(room) {
+		let socketsInLobby = await io.in(socket.data.lobbyName).fetchSockets();
+		let sockets = socketsInLobby.filter(s => s.data.currentWorldRoomName == room.name);
+		return sockets;
+	}
+
+	async function parseCommand(command) {
 		/**
 		 * TODO: Make a command parser
 		 * 
@@ -132,42 +182,185 @@ io.on("connection", function(socket) {
 
 		// Split the command by spaces into an array
 		let words = command.split(" ");
+		let unmodifiedWords = words;
+		words = words.map(word => word.toLowerCase());
 		let verb = '';
-		let object = '';
+		let verbIndex = 0;
+		// let object = '';
+		let objectStartIndex = -1; // For game items that have names with spaces
+		let objectEndIndex = -1;
 		let preposition = '';
 		let secondaryObject = '';
 
 		// Find the verb
+		let index = 0;
 		for (word of words) {
 			if (prepositions.includes(word)) {
-
+				if (verb === '') {
+					socket.emit('commandResponse', 'Your command cannot start with a proposition.');
+					return;
+				}
+				if (preposition === '') {
+					if (objectStartIndex !== -1) {
+						preposition = word;
+						objectEndIndex = index; // use the index as-is because it hasn't been incremented yet
+					} else {
+						socket.emit('commandResponse', verb + " " + word + " what?");
+						return;
+					}
+				} else {
+					socket.emit('commandResponse', 'There is more than one preposition in that sentence.');
+				}
 			}
-			if (verbs.includes(word)) {
-				verb = word;
+			else if (verbs.includes(word)) {
+				if (verb === '') {
+					verb = word;
+					verbIndex = index;
+				} else if (['say', 'speak', 'talk'].includes(verb)) {
+					// Do nothing
+				} else {
+					socket.emit('commandResponse', 'There is more than one verb in that sentence.')
+					return;
+				}
 			}
+			else if (verb !== '') {
+				if (objectStartIndex === -1) {
+					// object = word;
+					objectStartIndex = index;
+				} else {
+					objectEndIndex = index;
+				}
+			}
+			index += 1;
 		}
 
+		let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
+		let gameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
 		let response = '';
 		if (['l', 'look'].includes(verb)) {
-			let currentRoom = rooms.find(r => r.name === socket.data.roomName);
-			response = currentRoom.gameRooms[0].description;
-		} else {
-			response = "I didn't understand that.";
+			response = getRoomDescription(gameRoom);
 		}
+		else if (['help', 'h'].includes(verb)) {
+			response = "TODO: output some text to help the user.";
+		}
+		else if (['north', 'n', 'south', 's', 'east', 'e', 'west', 'w', 'up', 'u', 'down', 'd'].includes(verb)) {
+			// Extend the shortcut direction commands to their full word so that they can be used to filter the array
+			if (verb === 'n') verb = 'north';
+			else if (verb === 's') verb = 'south';
+			else if (verb === 'e') verb = 'east';
+			else if (verb === 'w') verb = 'west';
+			else if (verb === 'u') verb = 'up';
+			else if (verb === 'd') verb = 'down';
 
-		socket.emit('commandResponse', response);
+			let exit = gameRoom.exits.find(exit => exit.direction === verb);
+			if (exit) {
+				let destinationRoom = currentLobby.gameRooms.find(r => r.name == exit.destination);
+				socket.data.currentWorldRoomName = exit.destination;
+				response = getRoomDescription(destinationRoom);
+
+				// Notify the relevant users that this user changed game rooms
+				let socketsInLobby = await io.in(socket.data.lobbyName).fetchSockets();
+				let usersInExitedRoom = socketsInLobby.filter(s => s.data.currentWorldRoomName == gameRoom.name);
+				let usersInDestinationRoom = socketsInLobby.filter(s => s.data.currentWorldRoomName == destinationRoom.name);
+				for (user of usersInExitedRoom) {
+					socket.to(user.id).emit('event', socket.data.name + " just went " + verb, 'user');
+				}
+				for (user of usersInDestinationRoom) {
+					socket.to(user.id).emit('event', socket.data.name + " just entered from the " + verb, 'user');
+				}
+			} else
+				response = "There is no exit in that direction";
+		}
+		else if (['inventory', 'i'].includes(verb)) {
+			socket.emit('commandResponse',
+				"You are carrying: " + (socket.data.inventory.length ? socket.data.inventory.map(item => item?.name).join(", ") : 'nothing')
+			);
+		}
+		else if (['get', 'take'].includes(verb)) {
+			let objectName = '';
+			if (objectEndIndex === -1) // If this is a single word item
+				objectName = words[objectStartIndex];
+			else { // if this item's name is multiple words (i.e. with spaces)
+				for (let i = objectStartIndex; i <= objectEndIndex; ++i) {
+					objectName += words[i];
+					if (i < objectEndIndex)
+						objectName += " ";
+				}
+			}
+			if (objectName !== '') {
+				let itemToTakeIndex = gameRoom.interactables.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+				if (itemToTakeIndex != -1) {
+					if (gameRoom.interactables[itemToTakeIndex].canGet) {
+						// Remove the item from the gameRoom
+						let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
+						// Push the item to the player's inventory
+						socket.data.inventory.push(takenItem);
+						response = "You took the " + takenItem.name;
+						// Remove the positionalPhrase from the item
+						takenItem.positionalPhrase = '';
+						for (user of await getSocketsInGameRoom(gameRoom)) {
+							socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+						}
+					} else response = "You can't take that!";
+				} else response = "There doesn't seem to be one of those here.";
+			}
+			else response = verb + " what?";
+		}
+		else if (verb === 'drop') {
+			let objectName = '';
+			if (objectEndIndex === -1) // If this is a single word item
+				objectName = words[objectStartIndex];
+			else { // if this item's name is multiple words (i.e. with spaces)
+				for (let i = objectStartIndex; i <= objectEndIndex; ++i) {
+					objectName += words[i];
+					if (i < objectEndIndex)
+						objectName += " ";
+				}
+			}
+			if (objectName !== '') {
+				// Find the index of the item to drop
+				let itemToDropIndex = socket.data.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+				if (itemToDropIndex != -1) {
+					// Remove the item from the player's inventory
+					let droppedItem = socket.data.inventory.splice(itemToDropIndex, 1)[0];
+					// Push the item to the gameRoom
+					gameRoom.interactables.push(droppedItem);
+					response = "You dropped the " + droppedItem.name + " on the ground.";
+					droppedItem.positionalPhrase = " on the ground."
+					for (user of await getSocketsInGameRoom(gameRoom)) {
+						socket.to(user.id).emit('event', socket.data.name + " just dropped " + droppedItem.name, 'user');
+					}
+				} else response = "You don't seem to be carrying that.";
+			}
+			else response = verb + " what?";
+		}
+		else if (['say', 'speak', 'talk'].includes(verb)) {
+			let quote = unmodifiedWords.slice(verbIndex + 1).join(' ');
+			let m = socket.data.name + " says \"" + quote + "\"";
+			socket.to(socket.data.lobbyName).emit("messageSent", m);
+			let response = "You said \"" + quote + "\"";
+			socket.emit('commandResponse', response);
+			response = '';
+			// TODO: make the players only able to talk to the players in the same game world room?
+		}
+		else response = "I didn't understand that.";
+
+		if (response != '')
+			socket.emit('commandResponse', response);
 	}
 
 	socket.on("disconnect", function() {
 		//This particular socket connection was terminated (probably the client went to a different page
 		//or closed their browser).
-		console.log("Somebody disconnected.");
 
+		let username = socket.data.username;
 		// Remove user from their room
-		leaveRoomInternal(socket);
+		leaveLobbyInternal(socket);
 
-		io.emit("updateUserList", mapSocketsToUsernames(io.sockets.sockets));
-		// TODO: remove the user from their room and if the room is empty, delete the room.
+		let currentLobby = lobbies.filter(room => room.name == socket.data.lobbyName)[0];
+		if (currentLobby) {
+			io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
+		}
 	});
 
 	socket.on("directMessage", function(targetUser, text) {
@@ -180,8 +373,7 @@ io.on("connection", function(socket) {
 		}
 	});
 
-	//Events coming from client going to server...
-	socket.on("sendUsername", function(username, callback) {
+	socket.on("joinLobby", function(lobbyName, username, callback) {
 		let allIds = Array.from(io.sockets.sockets.keys());
 		let duplicate = false;
 		for(id of allIds) {
@@ -192,98 +384,110 @@ io.on("connection", function(socket) {
 
 		if (!duplicate) {
 			socket.data.name = username; //TODO: Be wary of ANY data coming from the client.
-			callback(true, messages);
-
-			io.emit("updateUserList", mapSocketsToUsernames(io.sockets.sockets));
-			let h = username + " logged in!";
-			messages.push(h);
-			io.emit("messageSent", h);
 		}
 		else {
-			callback(false, null);
-		}
-	});
-
-	socket.on("joinRoom", function(roomName, callback) {
-		socket.data.roomName = roomName; //TODO: Be wary of ANY data coming from the client.
-
-		// Place the new user/socket in a room
-		socket.join(roomName);
-		console.log(socket.data.name + ' joined ' + roomName);
-
-		let roomToJoin = rooms.filter(room => room.name == roomName)[0];
-		if (roomToJoin) {
-			if (roomToJoin?.users?.length >= MAX_USERS_PER_ROOM) {
-				callback(false, "That room is full!");
-				return;
-			}
-
-			roomToJoin.users.push(socket.data.name);
-			// console.log(roomToJoin.users.map(socket => socket.data.name));
-		} else {
-			// Note the difference between a server room and a game room
-			let newRoom = {
-				name: roomName,
-				gameRooms: structuredClone(INITIAL_WORLD_DATA),
-				users: [socket.data.name]
-			};
-			rooms.push(newRoom);
-		}
-
-		if (!roomMessages[roomName]){
-			roomMessages[roomName] = [];
-		}
-
-		// the "callback" below calls the method that the client side gave
-		callback(true, "Joined successfully");
-
-		updateGameWorld(roomName);
-	});
-
-	// Handle leave room request
-	socket.on("leaveRoom", function(callback){
-		leaveRoomInternal(socket);
-
-		if (callback) {
-			callback(true, "Left room successfully.");
-		}
-	});
-
-	socket.on("sendChat", function(chatMessage) {
-		let roomName = socket.data.roomName;
-		console.log(socket.rooms)
-		// let currentRoom = Array.from(socket.rooms)[0]; // The users can only be in one room at a time, so just take the first room that they are in
-		let currentRoom = socket.data.roomName;
-		let m = socket.data.name + " just said: " + chatMessage + " from room: " + currentRoom;
-		messages.push(m);
-		roomMessages[roomName].push(m);
-		console.log(m);
-		io.to(currentRoom).emit("messageSent", m);
-	});
-
-	//retrieve stored chat history for this room
-	socket.on("showChatHistory", function(callback){
-		const roomName = socket.data.roomName;
-		if (!roomName){
-			if (callback) callback(false, "You are not in a room.", []);
+			callback(false, "Username " + username + " is already taken. Try another.");
 			return;
 		}
 
-		const history = roomMessages[roomName] || [];
+		socket.data.lobbyName = lobbyName; //TODO: Be wary of ANY data coming from the client.
+
+		// Place the new user/socket in a room
+		socket.join(lobbyName);
+
+		socket.data.currentWorldRoomName = INITIAL_WORLD_START_ROOM
+
+		let lobbyToJoin = lobbies.filter(lobby => lobby.name == lobbyName)[0];
+		if (lobbyToJoin) {
+			if (lobbyToJoin?.users?.length >= MAX_USERS_PER_LOBBY) {
+				callback(false, "That lobby is full!");
+				return;
+			}
+
+			lobbyToJoin.users.push(socket.data.name);
+			io.to(lobbyName).emit("updateUserList", lobbyToJoin.users);
+		} else {
+			// Note the difference between a server room (now called a lobby) and a game room
+			let newLobby = {
+				name: lobbyName,
+				gameRooms: structuredClone(INITIAL_WORLD_DATA),
+				users: [socket.data.name]
+			};
+			lobbies.push(newLobby);
+			lobbyToJoin = newLobby;
+		}
+
+		if (!lobbyMessages[lobbyName]){
+			lobbyMessages[lobbyName] = [];
+		}
+
+		socket.data.inventory = [
+			// Default starting inventory
+			{
+				name: "scrap of paper",
+				altNames: ['paper'],
+				description: "It's a tattered piece of blank paper.",
+				canGet: true,
+				listOnLook: true,
+			},
+			{
+				name: "pencil",
+				description: "It's a yellow wooden pencil with a dried out eraser.",
+				canGet: true,
+				listOnLook: true,
+			}
+		];
+
+		// the "callback" below calls the method that the client side gave
+		callback(true, "Joined successfully");
+		io.to(socket.data.lobbyName).emit("userJoinedLobby", socket.data.name);
+		let currentGameRoom = lobbyToJoin.gameRooms.find(r => r.name == socket.data.currentWorldRoomName)
+		socket.emit('event', getRoomDescription(currentGameRoom));
+	});
+
+	// Handle leave lobby request
+	socket.on("leaveLobby", function(callback){
+		leaveLobbyInternal(socket);
+
+		if (callback) {
+			callback(true, "Left lobby successfully.");
+		}
+	});
+
+	// sendChat is no longer used on the client side. (users use the "say" command)
+	socket.on("sendChat", function(chatMessage) {
+		let lobbyName = socket.data.lobbyName;
+		// let currentLobby = Array.from(socket.rooms)[0]; // The users can only be in one room at a time, so just take the first room that they are in
+		let currentLobby = socket.data.lobbyName;
+		let m = socket.data.name + ": " + chatMessage;
+		messages.push(m);
+		lobbyMessages[lobbyName].push(m);
+		io.to(currentLobby).emit("messageSent", m);
+	});
+
+	//retrieve stored chat history for this lobby
+	socket.on("showChatHistory", function(callback){
+		const lobbyName = socket.data.lobbyName;
+		if (!lobbyName){
+			if (callback) callback(false, "You are not in a lobby.", []);
+			return;
+		}
+
+		const history = lobbyMessages[lobbyName] || [];
 		if (callback) callback(true, history);
 	});
 
 
 	socket.on("sendCommand", function(command, callback) {
-		const roomName = socket.data.roomName;
-		if (!roomName){
-			callback(false, "You are not in a room.");
+		const lobbyName = socket.data.lobbyName;
+		if (!lobbyName){
+			callback(false, "You are not in a lobby.");
 			return;
 		}
 
-		const room = rooms.find(r => r.name === roomName);
-		if (!room) {
-			callback(false, "Room not found.");
+		const lobby = lobbies.find(r => r.name === lobbyName);
+		if (!lobby) {
+			callback(false, "Lobby not found.");
 			return;
 		}
 		parseCommand(command);
@@ -291,21 +495,21 @@ io.on("connection", function(socket) {
 	});
 
 
-	// List players in the current room
+	// List players in the current lobby
 	socket.on("listPlayers", function(callback){
-		const roomName = socket.data.roomName;
-		if (!roomName){
-			if (callback) callback(false, "You are not in a room.", []);
+		const lobbyName = socket.data.lobbyName;
+		if (!lobbyName){
+			if (callback) callback(false, "You are not in a lobby.", []);
 			return;
 		}
 
-		const room = rooms.find(r => r.name === roomName);
-		if (!room) {
-			if (callback) callback(false, "Room not found.", []);
+		const lobby = lobbies.find(r => r.name === lobbyName);
+		if (!lobby) {
+			if (callback) callback(false, "Lobby not found.", []);
 			return;
 		}
 
-		const playerNames = room.users.map (s => s.data.name);
+		const playerNames = lobby.users;
 		if (callback) callback(true, playerNames);
 	});
 });

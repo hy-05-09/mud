@@ -15,29 +15,19 @@ export default {
 			username: null,
 			requestedUsername: "",
 			userList: [],
-			requestedRoomName: "",
-			worldData: {}
+			requestedLobbyName: ""
 		};
 	},
 	methods: {
 		sendText() {
 			// socket.emit("sendChat", this.inputText);
+			this.addChatHistory(">" + this.inputText); // This line shows the command that the user typed
 			socket.emit("sendCommand", this.inputText, (success, msg) => {
-				if (success)
+				if (success) {
 					this.inputText = "";
-				else {
-					this.chatHistory.push(msg);
-				}
-			});
-		},
-		requestUsername() {
-			socket.emit("sendUsername", this.requestedUsername, (usernameValid, previousChatMessages) => {
-				if (usernameValid) {
-					this.username = this.requestedUsername;
-					this.chatHistory = previousChatMessages;
 				}
 				else {
-					alert("Username" + this.requestedUsername +" is already taken.  Try another.");
+					this.addChatHistory(msg);
 				}
 			});
 		},
@@ -45,54 +35,97 @@ export default {
 			socket.emit("directMessage", this.userList[index], this.inputText);
 			this.inputText = "";
 		},
-		joinRoom() {
-			socket.emit("joinRoom", this.requestedRoomName, (success, message) => {
+		joinLobby() {
+			socket.emit("joinLobby", this.requestedLobbyName, this.requestedUsername, (success, message) => {
 				if (success) {
-					console.log("Joined room successfully!");
+					this.username = this.requestedUsername;
+					// this.chatHistory = previousChatMessages;
+					console.log("Joined lobby successfully!");
 				} else {
-					console.log("Failed to join room: " + message);
+					alert("Failed to join lobby: " + message);
 				}
 			});
 		},
 		handleIntro(){
-			this.requestUsername();
-			this.joinRoom();
+			this.joinLobby();
+		},
+		requestPlayersInLobby() {
+			socket.emit('listPlayers', (success, message) => {
+				if (success) {
+					console.log(message);
+				}
+			})
+		},
+		addChatHistory(msg, type = '') {
+			this.chatHistory.push({
+				text: msg,
+				type: type
+			});
+			// Set a 50 milisecond timer so that enough time has passed for the new msg to be added and then scroll to the bottom.
+			setTimeout(() => {
+				this.$refs.chatBox.scrollTop = this.$refs.chatBox.scrollHeight;
+			}, 50);
 		}
 	},
 	mounted() {
 		socket.on("messageSent", (chatMessage) => {
-			this.chatHistory.push(chatMessage);
+			this.addChatHistory(chatMessage, 'message');
 		});
 		socket.on("commandResponse", (chatMessage) => {
-			this.chatHistory.push(chatMessage);
+			this.addChatHistory(chatMessage);
 		});
 		socket.on("updateUserList", (userList) => {
 			this.userList = userList;
 		});
-		socket.on("updateGameWorld", (worldData) => {
-			this.worldData = worldData;
+		socket.on("userLeftLobby", (username) => {
+			this.addChatHistory(username + " left the game.", 'user');
+		});
+		socket.on("userJoinedLobby", (username) => {
+			if (username == this.username) {
+				this.addChatHistory("Welcome, " + this.username + ", you joined successfully.");
+			} else {
+				this.addChatHistory(username + " joined the game.", 'user');
+			}
+		});
+		socket.on('event', (msg, type = '') => {
+			this.addChatHistory(msg, type);
 		})
 	}
 }
 </script>
 <template>
     <div id="container">
-      <span id="chat">
-        <p v-for="chat of chatHistory" :key="chat">{{ chat }}</p>
-      </span>
-      <span id="map">Map</span>
-    </div> 
-    <div id="controls">
-      <input id="inputText" type="text" v-model="inputText"/>
-      <button id="sendButton" @click="sendText">test</button>
+      	<div id="chat" ref="chatBox">
+        	<template v-for="chat of chatHistory" :key="chat.text">
+				<p :class="[
+					'chat-line',
+					chat.type == 'user' ? 'text-user' : 
+					chat.type == 'message' ? 'text-message' : '',
+				]">
+					{{ chat.text }}
+				</p>
+			</template>
+      	</div>
+      	<div id="map">
+			Map
+			<!-- <button @click="requestPlayersInLobby">Print Players</button> -->
+		</div>
     </div>
-	<div v-if="username==null" class="overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;">
+	<form
+		id="controls"
+		autocomplete="off"
+		@submit.prevent="sendText"
+	>
+		<input id="inputText" type="text" v-model="inputText"/>
+		<button id="sendButton" type="submit">Submit</button>
+	</form>
+	<div v-if="username==null" class="overlay" style="position: absolute; inset: 0;">
 		<p>Enter a username</p>
 		<input v-model="requestedUsername" type="text">
-		<p>Enter a room name to join or create new one</p>
-		<input v-model="requestedRoomName" type="text"></input>
+		<p>Enter a lobby name to join or create new one</p>
+		<input v-model="requestedLobbyName" type="text"></input>
 		<br></br>
 		<button @click="handleIntro">Submit</button>
 	</div>
-	<p class="clickable" @click="directMessage(index)" v-for="(user, index) of userList">{{user}}<br></p>
+	<!-- <p class="clickable" @click="directMessage(index)" v-for="(user, index) of userList">{{user}}<br></p> -->
 </template>
