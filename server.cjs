@@ -30,6 +30,7 @@ app.use(express.static("pub"));
 //On the server side, you also need to do:
 //	npm install express
 //	npm install socket.io
+//	npm install mongoose
 
 let messages = []; //a full list of all chat made on this server
 let lobbyMessages = {}; // a list of chats made on specific room
@@ -789,6 +790,27 @@ io.on("connection", function(socket) {
 		callback(true, lobby.users);
 	});
 });
+
+
+async function run() {
+	// Connect the client to the server (optional starting in v4.7)
+	await client.connect();
+	// Send a ping to confirm a successful connection
+	db = client.db("mudGame");
+	console.log("You successfully connected to MongoDB!");
+	
+	server.listen(8080, function() {
+		console.log("Server with socket.io is ready.");
+	});
+}
+run().catch(console.dir);
+
+async function shutDown() {
+	await client.close();
+	console.log("Database connection closed.");
+	process.exit(0);
+}
+process.on('SIGINT', shutDown); //If you hit ctrl-c, it triggers the shutDown method
 
 
 async function run() {
