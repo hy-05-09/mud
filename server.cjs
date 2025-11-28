@@ -1,5 +1,18 @@
 // This file was copied from the CS365 notes
 
+//db code
+const {MongoClient, ObjectId, ServerApiVersion} = require("mongodb");
+const uri = "mongodb://localhost:27017";
+const client = new MongoClient(uri,{
+		serverApi: {
+			version: ServerApiVersion.v1,
+			strict: true,
+			deprecationErrors: true,
+		}
+});
+
+let db;
+
 var express = require("express");
 var app = express();
 var http = require("http");
@@ -7,6 +20,10 @@ var server = http.Server(app);
 var socketio = require("socket.io");
 var io = socketio(server);
 app.use(express.static("pub"));
+
+//On the server side, you also need to do:
+//	npm install express
+//	npm install socket.io
 
 let messages = []; //a full list of all chat made on this server
 let lobbyMessages = {}; // a list of chats made on specific room
@@ -455,25 +472,40 @@ io.on("connection", function(socket) {
 	});
 
 	// sendChat is no longer used on the client side. (users use the "say" command)
-	socket.on("sendChat", function(chatMessage) {
+	socket.on("sendChat", async function(chatMessage) {
 		let lobbyName = socket.data.lobbyName;
-		// let currentLobby = Array.from(socket.rooms)[0]; // The users can only be in one room at a time, so just take the first room that they are in
 		let currentLobby = socket.data.lobbyName;
-		let m = socket.data.name + ": " + chatMessage;
-		messages.push(m);
-		lobbyMessages[lobbyName].push(m);
-		io.to(currentLobby).emit("messageSent", m);
+		// let m = socket.data.name + ": " + chatMessage;
+		// messages.push(m);
+		// lobbyMessages[lobbyName].push(m);
+		let messageObj = {
+			room: currentLobby,
+			user: socket.data.name,
+			text: chatMessage,
+			time: new Date()
+		};
+
+		await db.collection("messages").insertOne(messageObj);
+
+		io.to(currentLobby).emit("messageSent", 
+			`${messageObj.user}:${messageObj.text}`
+		);
 	});
 
 	//retrieve stored chat history for this lobby
-	socket.on("showChatHistory", function(callback){
+	socket.on("showChatHistory", async function(callback){
 		const lobbyName = socket.data.lobbyName;
 		if (!lobbyName){
 			if (callback) callback(false, "You are not in a lobby.", []);
 			return;
 		}
 
-		const history = lobbyMessages[lobbyName] || [];
+		// const history = lobbyMessages[lobbyName] || [];
+		const history = await db.collection("messages")
+			.find({room:roomName})
+			.sort({time:1})
+			.toArray();
+
 		if (callback) callback(true, history);
 	});
 
@@ -514,7 +546,23 @@ io.on("connection", function(socket) {
 	});
 });
 
-server.listen(8080, function() {
-	console.log("Server with socket.io is ready.");
-});
 
+async function run() {
+	// Connect the client to the server (optional starting in v4.7)
+	await client.connect();
+	// Send a ping to confirm a successful connection
+	db = client.db("mudGame");
+	console.log("You successfully connected to MongoDB!");
+	
+	server.listen(8080, function() {
+		console.log("Server with socket.io is ready.");
+	});
+}
+run().catch(console.dir);
+
+async function shutDown() {
+	await client.close();
+	console.log("Database connection closed.");
+	process.exit(0);
+}
+process.on('SIGINT', shutDown); //If you hit ctrl-c, it triggers the shutDown method
