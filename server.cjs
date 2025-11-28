@@ -1,5 +1,11 @@
-// This file was copied from the CS365 notes
+// This is the main MUD server
 
+//Notes for running the MongoDB server (I copied these instructions from the CS365 notes):
+// Download and install MongoDB from: https://www.mongodb.com/try/download/community
+// On Windows, open a command prompt and...
+//    cd C:\Program Files\MongoDB\Server\8.2\bin  (or add to path)
+//    mongod --dbpath C:\stuff\mongodb\  (or wherever you want the data files for the database to go)
+// Now the MongoDB server is running, and node.js can connect to it from the server below.
 //db code
 const {MongoClient, ObjectId, ServerApiVersion} = require("mongodb");
 const uri = "mongodb://localhost:27017";
@@ -355,15 +361,23 @@ io.on("connection", function(socket) {
 			let quote = unmodifiedWords.slice(verbIndex + 1).join(' ');
 			let m = socket.data.name + " says \"" + quote + "\"";
 			socket.to(socket.data.lobbyName).emit("messageSent", m);
-			let response = "You said \"" + quote + "\"";
-			socket.emit('commandResponse', response);
-			response = '';
+			response = "You said \"" + quote + "\"";
 			// TODO: make the players only able to talk to the players in the same game world room?
 		}
 		else response = "I didn't understand that.";
 
 		if (response != '')
 			socket.emit('commandResponse', response);
+
+		let responseObj = {
+			lobby: socket.data.lobbyName,
+			user: socket.data.name,
+			command: command,
+			response: response,
+			time: new Date()
+		};
+
+		await db.collection("commandsAndResponses").insertOne(responseObj);
 	}
 
 	socket.on("disconnect", function() {
