@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "express": "^5.1.0",
+    "mongodb": "^7.0.0",
+    "mongoose": "^8.20.0",
     "patch-package": "^8.0.1",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1",
