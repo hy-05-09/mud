@@ -157,6 +157,7 @@ io.on("connection", function(socket) {
 		socket.leave(lobbyName);
 		console.log(socket.data.name + " left " + lobbyName);
 		io.to(socket.data.lobbyName).emit("userLeftLobby", socket.data.name);
+		io.to(socket.data.lobbyName).emit("updateUserList", lobby.users);
 
 		// TODO (optional): If the lobby is empty, delete the lobby
 
@@ -279,6 +280,15 @@ io.on("connection", function(socket) {
 			if (exit) {
 				let destinationRoom = currentLobby.gameRooms.find(r => r.name == exit.destination);
 				socket.data.currentWorldRoomName = exit.destination;
+				// Update this player's room in the lobby user list
+				let userEntry = currentLobby.users.find(u => u.name === socket.data.name);
+				if (userEntry) {
+					userEntry.room = socket.data.currentWorldRoomName;
+				}
+
+				// Push new user list to all clients
+				io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
+
 				response = getRoomDescription(destinationRoom);
 
 				// Notify the relevant users that this user changed game rooms
@@ -435,14 +445,20 @@ io.on("connection", function(socket) {
 				return;
 			}
 
-			lobbyToJoin.users.push(socket.data.name);
+			lobbyToJoin.users.push({
+				name: socket.data.name,
+				room: socket.data.currentWorldRoomName
+			});
 			io.to(lobbyName).emit("updateUserList", lobbyToJoin.users);
 		} else {
 			// Note the difference between a server room (now called a lobby) and a game room
 			let newLobby = {
 				name: lobbyName,
 				gameRooms: structuredClone(INITIAL_WORLD_DATA),
-				users: [socket.data.name]
+				users: [{
+					name: socket.data.name,
+					room: socket.data.currentWorldRoomName
+				}]
 			};
 			lobbies.push(newLobby);
 			lobbyToJoin = newLobby;
@@ -474,6 +490,7 @@ io.on("connection", function(socket) {
 		io.to(socket.data.lobbyName).emit("userJoinedLobby", socket.data.name);
 		let currentGameRoom = lobbyToJoin.gameRooms.find(r => r.name == socket.data.currentWorldRoomName)
 		socket.emit('event', getRoomDescription(currentGameRoom));
+		io.to(socket.data.lobbyName).emit("updateUserList", lobbyToJoin.users);
 	});
 
 	// Handle leave lobby request

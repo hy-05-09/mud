@@ -106,9 +106,8 @@ export default {
 				</p>
 			</template>
       	</div>
-      	<div id="map">
-			Map
-			<!-- <button @click="requestPlayersInLobby">Print Players</button> -->
+		<div id="userList">
+			<p class="clickable" @click="directMessage(index)" v-for="(user, index) of userList">{{user.name}} - {{user.room}}<br></p>
 		</div>
     </div>
 	<form

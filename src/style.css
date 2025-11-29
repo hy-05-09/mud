@@ -119,6 +119,17 @@ button:active {
   text-align: center;
 }
 
+#userList {
+  width: 25%;
+  height: 100%;
+  background-color: #1a1a1a;
+  color: white;
+  overflow-y: scroll;
+  display: inline-block;
+  text-align: left;
+  padding-left: 10px;
+}
+
 #sendButton {
   width: 25%;
   height: 2em;
