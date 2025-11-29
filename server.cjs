@@ -413,8 +413,8 @@ io.on("connection", function(socket) {
 
 	socket.on("directMessage", function(targetUser, text) {
 		for(id of Array.from(io.sockets.sockets.keys())) {
-			if (io.sockets.sockets.get(id).data.name == targetUser) {
-				let m = socket.data.name + " just whispered to " + targetUser + ": " + text;
+			if (io.sockets.sockets.get(id).data.name == targetUser.name) {
+				let m = socket.data.name + " just whispered to " + targetUser.name + ": " + text;
 				io.sockets.sockets.get(id).emit("messageSent", m);
 				socket.emit("messageSent", m); //also informs the one who sent the whisper
 			}
