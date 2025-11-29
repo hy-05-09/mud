@@ -157,7 +157,14 @@ io.on("connection", function(socket) {
 		socket.leave(lobbyName);
 		console.log(socket.data.name + " left " + lobbyName);
 		io.to(socket.data.lobbyName).emit("userLeftLobby", socket.data.name);
-		io.to(socket.data.lobbyName).emit("updateUserList", lobby.users);
+		let currentLobby = lobbies.find(room => room.name === socket.data.lobbyName);
+		if (currentLobby) {
+			// Remove this user
+			currentLobby.users = currentLobby.users.filter(u => u.name !== socket.data.name);
+
+			io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
+		}
+
 
 		// TODO (optional): If the lobby is empty, delete the lobby
 
@@ -500,6 +507,7 @@ io.on("connection", function(socket) {
 		if (callback) {
 			callback(true, "Left lobby successfully.");
 		}
+
 	});
 
 	// sendChat is no longer used on the client side. (users use the "say" command)
@@ -572,8 +580,7 @@ io.on("connection", function(socket) {
 			return;
 		}
 
-		const playerNames = lobby.users;
-		if (callback) callback(true, playerNames);
+		callback(true, lobby.users);
 	});
 });
 
