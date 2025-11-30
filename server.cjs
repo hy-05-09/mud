@@ -37,15 +37,86 @@ let lobbyMessages = {}; // a list of chats made on specific room
 let adjectives = ["Best", "Happy", "Creepy", "Sappy"];
 let nouns = ["Programmer", "Developer", "Web dev", "Student", "Person"];
 
+// Game command parsing words:
+let verbs = ['l', 'look', 'examine', 'north', 'n', 'south', 's', 'east', 'e', 'west',
+	'w', 'up', 'u', 'down', 'd', 'get', 'grab', 'take', 'drop', 'use', 'attack', 'hit',
+	'read', 'eat', 'drink', 'throw', 'jump', 'sit', 'whisper', 'say', 'yell', 'talk',
+	'speak', 'open', 'close', 'put', 'place', 'set', 'unlock', 'lock', 'turn',
+	'help', 'h', 'inventory', 'i']; // Make sure to handle "look at"
+
+let prepositions = ['with', 'at', 'on', 'in', 'to'];
+
+let articles = ['a', 'an', 'the', 'these', 'those', 'this', 'that'];
+
+let unlockVerbs = ['unlock', 'open'];
+let lockVerbs = ['lock', 'close'];
+
 const MAX_USERS_PER_LOBBY = 4;
 
 const INITIAL_WORLD_START_ROOM = 'outside';
+
+function setExitLockState(socket, eventObject, actingItem, itemToBeUnlocked, locked = false) {
+	let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
+	let currentGameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
+	let exit = currentGameRoom.exits?.find(exit => exit.destination === eventObject.target);
+	let destinationRoom = currentLobby.gameRooms.find(r => r.name === eventObject.target);
+	let destinationExit = destinationRoom?.exits?.find(exit => exit.destination === currentGameRoom.name);
+	let response = '';
+	let success = () => {
+		exit.isLocked = locked;
+		response = "The " + itemToBeUnlocked.name + " is now " + (exit.isLocked ? 'locked' : 'unlocked');
+	}
+	if (exit?.isLocked !== undefined) {
+		if (itemToBeUnlocked?.neededKeyId === actingItem?.keyId) {
+			// Using a function here for other potential conditional maners of unlocking
+			success();
+		} else {
+			if (actingItem?.doesNotExist)
+				response = "I don't know what \"" + actingItem?.name + "\" is in this context.";
+			else if (actingItem?.wasNotGiven)
+				response = "The " + itemToBeUnlocked.name + " can't be unlocked on its own.";
+			else if (actingItem?.name)
+				response = "Your attempt to " + (locked ? 'lock' : 'unlock') + " the " + itemToBeUnlocked.name + " with the " + actingItem.name + " failed.";
+			else response = "Your attempt to " + (locked ? 'lock' : 'unlock') + " the " + itemToBeUnlocked.name + " failed.";
+		}
+	}
+	if (destinationExit?.isLocked !== undefined)
+		destinationExit.isLocked = locked;
+	return response;
+}
+
+const interactableFunctions = {
+	// These functions are meant to correspond to the action event names that game-item-objects can refer to.
+	// They are for doing things when the player interacts with things in the game.
+	// So you can define a custom function here to handle whatever sort of game behavior you might want.
+	// All of these functions expect four arguments (these arguments can be named more
+	// specifically in the functions themselves):
+	// 	the applicable socket of whoever is playing
+	// 	eventObject,
+	//	actingItem (object)
+	//	itemToBeActedOn (object)
+	unlockExit: (socket, eventObject, actingItem, itemToBeActedOn) => {
+		return setExitLockState(socket, eventObject, actingItem, itemToBeActedOn, false);
+	},
+	lockExit: (socket, eventObject, actingItem, itemToBeActedOn) => {
+		return setExitLockState(socket, eventObject, actingItem, itemToBeActedOn, true);
+	},
+	toggleLockExit: (socket, eventObject, actingItem, itemToBeActedOn) => {
+		let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
+		let currentGameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
+		let exit = currentGameRoom.exits?.find(exit => exit.destination === eventObject.target);
+		let locked = false;
+		if (exit?.isLocked !== undefined)
+			locked = !exit.isLocked;
+		return setExitLockState(socket, eventObject, actingItem, itemToBeActedOn, locked);
+	}
+};
 
 // This is the initial game data that each server-room starts with:
 const INITIAL_WORLD_DATA = [
 	{
 		name: 'kitchen',
-		description: 'You are standing in a kitchen with a table in the middle. There is a refrigerator here. There is a door to the north leading outside.',
+		description: 'You are standing in a kitchen with a table in the middle. There is a refrigerator here. There is a door to the north leading outside. There is a door leading to the east',
 		exits: [
 			{
 				destination: 'outside',
@@ -53,7 +124,8 @@ const INITIAL_WORLD_DATA = [
 			},
 			{
 				destination: 'locked-room',
-				direction: 'east'
+				direction: 'east',
+				isLocked: true,
 			}
 		],
 		interactables: [
@@ -65,11 +137,42 @@ const INITIAL_WORLD_DATA = [
 				listOnLook: false,
 			},
 			{
-				name: 'key',
+				name: 'old key',
+				altNames: ['key'],
+				keyId: 'old-room-key',
 				description: 'It is an old key',
 				positionalPhrase: ' sitting on the table.', // This is used to describe where the object is in the room.
 				canGet: true,
 				listOnLook: true, // If this is true, the item will be tacked on to the room description
+			},
+			{
+				name: 'door',
+				altNames: ['old door', 'old wooden door', 'wooden door'], // TODO: fuzzy matches, so if the user says wooden door but the alt names doesn't have that one
+				description: "It's an old wooden door",
+				neededKeyId: "old-room-key",
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'locked-room'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'locked-room'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'locked-room'
+						}]
+					}
+				]
 			}
 		]
 	},
@@ -80,10 +183,43 @@ const INITIAL_WORLD_DATA = [
 		exits: [
 			{
 				destination: 'kitchen',
-				direction: 'west'
+				direction: 'west',
+				isLocked: true,
+				// neededKey: 'old-room-key'
 			}
 		],
-		interactables: []
+		interactables: [
+			{
+				name: 'door',
+				// TODO: maybe with the database, this INITIAL_WORLD_DATA could be restructured so that it doesn't need duplicate items for things like locked doors
+				altNames: ['old door', 'old wooden door', 'wooden door'], // TODO: fuzzy matches, so if the user says wooden door but the alt names doesn't have that one
+				description: "It's an old wooden door",
+				neededKeyId: "old-room-key",
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'kitchen'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'kitchen'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'kitchen'
+						}]
+					}
+				]
+			}
+		]
 	},
 	{
 		name: 'outside',
@@ -118,14 +254,6 @@ function mapSocketsToUsernames(socketList) {
 	}
 	return ret;
 }
-
-let verbs = ['l', 'look', 'examine', 'north', 'n', 'south', 's', 'east', 'e', 'west',
-	'w', 'up', 'u', 'down', 'd', 'get', 'grab', 'take', 'drop', 'use', 'attack', 'hit',
-	'read', 'eat', 'drink', 'throw', 'jump', 'sit', 'whisper', 'say', 'yell', 'talk',
-	'speak', 'open', 'close', 'put', 'place', 'set', 'unlock', 'lock', 'turn',
-	'help', 'h', 'inventory', 'i']; // Make sure to handle "look at"
-
-let prepositions = ['with', 'at', 'on', 'in', 'to'];
 
 //Every time a client connects (visits the page) this function(socket) {...} gets executed.
 //The socket is a different object each time a new client connects.
@@ -191,6 +319,20 @@ io.on("connection", function(socket) {
 		return sockets;
 	}
 
+	function getObjectNameFromIndices(words, objectStartIndex, objectEndIndex) {
+		let objectName = '';
+		if (objectEndIndex === -1) // If this is a single word item
+			objectName = words[objectStartIndex];
+		else { // if this item's name is multiple words (i.e. with spaces)
+			for (let i = objectStartIndex; i <= objectEndIndex; ++i) {
+				objectName += words[i];
+				if (i < objectEndIndex)
+					objectName += " ";
+			}
+		}
+		return objectName;
+	}
+
 	async function parseCommand(command) {
 		/**
 		 * TODO: Make a command parser
@@ -217,30 +359,35 @@ io.on("connection", function(socket) {
 		words = words.map(word => word.toLowerCase());
 		let verb = '';
 		let verbIndex = 0;
-		// let object = '';
 		let objectStartIndex = -1; // For game items that have names with spaces
 		let objectEndIndex = -1;
+		let secondaryObjectStartIndex = -1; // The secondary object's end index would just be the length of the array minus one. (from the start index to the end of the array)
 		let preposition = '';
-		let secondaryObject = '';
 
-		// Find the verb
+		// This is the parsing loop
 		let index = 0;
 		for (word of words) {
 			if (prepositions.includes(word)) {
 				if (verb === '') {
-					socket.emit('commandResponse', 'Your command cannot start with a proposition.');
+					socket.emit('commandResponse', 'Your command must contain a verb.');
 					return;
 				}
 				if (preposition === '') {
 					if (objectStartIndex !== -1) {
 						preposition = word;
-						objectEndIndex = index; // use the index as-is because it hasn't been incremented yet
+						objectEndIndex = index - 1;
+						if (articles.includes(words[index + 1]))
+							// If there is an article, skip to the next index
+							secondaryObjectStartIndex = index + 2;
+						else
+							secondaryObjectStartIndex = index + 1;
 					} else {
 						socket.emit('commandResponse', verb + " " + word + " what?");
 						return;
 					}
 				} else {
 					socket.emit('commandResponse', 'There is more than one preposition in that sentence.');
+					return;
 				}
 			}
 			else if (verbs.includes(word)) {
@@ -254,11 +401,10 @@ io.on("connection", function(socket) {
 					return;
 				}
 			}
-			else if (verb !== '') {
+			else if (verb !== '' && !articles.includes(word)) {
 				if (objectStartIndex === -1) {
-					// object = word;
 					objectStartIndex = index;
-				} else {
+				} else if (preposition === '') {
 					objectEndIndex = index;
 				}
 			}
@@ -275,6 +421,7 @@ io.on("connection", function(socket) {
 			response = "TODO: output some text to help the user.";
 		}
 		else if (['north', 'n', 'south', 's', 'east', 'e', 'west', 'w', 'up', 'u', 'down', 'd'].includes(verb)) {
+			// TODO: allow using the command "go" to prefex the direction.
 			// Extend the shortcut direction commands to their full word so that they can be used to filter the array
 			if (verb === 'n') verb = 'north';
 			else if (verb === 's') verb = 'south';
@@ -286,27 +433,31 @@ io.on("connection", function(socket) {
 			let exit = gameRoom.exits.find(exit => exit.direction === verb);
 			if (exit) {
 				let destinationRoom = currentLobby.gameRooms.find(r => r.name == exit.destination);
-				socket.data.currentWorldRoomName = exit.destination;
-				// Update this player's room in the lobby user list
-				let userEntry = currentLobby.users.find(u => u.name === socket.data.name);
-				if (userEntry) {
-					userEntry.room = socket.data.currentWorldRoomName;
-				}
+				if (exit.isLocked) {
+					response = "It's locked.";
+				} else {
+					socket.data.currentWorldRoomName = exit.destination;
+					// Update this player's room in the lobby user list
+					let userEntry = currentLobby.users.find(u => u.name === socket.data.name);
+					if (userEntry) {
+						userEntry.room = socket.data.currentWorldRoomName;
+					}
 
-				// Push new user list to all clients
-				io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
+					// Push new user list to all clients
+					io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
 
-				response = getRoomDescription(destinationRoom);
-
-				// Notify the relevant users that this user changed game rooms
-				let socketsInLobby = await io.in(socket.data.lobbyName).fetchSockets();
-				let usersInExitedRoom = socketsInLobby.filter(s => s.data.currentWorldRoomName == gameRoom.name);
-				let usersInDestinationRoom = socketsInLobby.filter(s => s.data.currentWorldRoomName == destinationRoom.name);
-				for (user of usersInExitedRoom) {
-					socket.to(user.id).emit('event', socket.data.name + " just went " + verb, 'user');
-				}
-				for (user of usersInDestinationRoom) {
-					socket.to(user.id).emit('event', socket.data.name + " just entered from the " + verb, 'user');
+					response = getRoomDescription(destinationRoom);
+	
+					// Notify the relevant users that this user changed game rooms
+					let socketsInLobby = await io.in(socket.data.lobbyName).fetchSockets();
+					let usersInExitedRoom = socketsInLobby.filter(s => s.data.currentWorldRoomName == gameRoom.name);
+					let usersInDestinationRoom = socketsInLobby.filter(s => s.data.currentWorldRoomName == destinationRoom.name);
+					for (user of usersInExitedRoom) {
+						socket.to(user.id).emit('event', socket.data.name + " just went " + verb, 'user');
+					}
+					for (user of usersInDestinationRoom) {
+						socket.to(user.id).emit('event', socket.data.name + " just entered from the " + verb, 'user');
+					}
 				}
 			} else
 				response = "There is no exit in that direction";
@@ -317,16 +468,7 @@ io.on("connection", function(socket) {
 			);
 		}
 		else if (['get', 'take'].includes(verb)) {
-			let objectName = '';
-			if (objectEndIndex === -1) // If this is a single word item
-				objectName = words[objectStartIndex];
-			else { // if this item's name is multiple words (i.e. with spaces)
-				for (let i = objectStartIndex; i <= objectEndIndex; ++i) {
-					objectName += words[i];
-					if (i < objectEndIndex)
-						objectName += " ";
-				}
-			}
+			let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
 			if (objectName !== '') {
 				let itemToTakeIndex = gameRoom.interactables.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
 				if (itemToTakeIndex != -1) {
@@ -347,16 +489,7 @@ io.on("connection", function(socket) {
 			else response = verb + " what?";
 		}
 		else if (verb === 'drop') {
-			let objectName = '';
-			if (objectEndIndex === -1) // If this is a single word item
-				objectName = words[objectStartIndex];
-			else { // if this item's name is multiple words (i.e. with spaces)
-				for (let i = objectStartIndex; i <= objectEndIndex; ++i) {
-					objectName += words[i];
-					if (i < objectEndIndex)
-						objectName += " ";
-				}
-			}
+			let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
 			if (objectName !== '') {
 				// Find the index of the item to drop
 				let itemToDropIndex = socket.data.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
@@ -374,12 +507,85 @@ io.on("connection", function(socket) {
 			}
 			else response = verb + " what?";
 		}
+		else if (['use'].includes(verb)) {
+			// TODO(?): rename these variables to all use item instead of "object"
+			let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
+			let itemToUse = socket.data.inventory.find(item => item.name === objectName || item.altNames?.includes(objectName));
+			if (!itemToUse) // if it doesn't exist in the inventory, look for it in the room.
+				itemToUse = gameRoom.interactables.find(item => item.name === objectName || item.altNames?.includes(objectName));
+			if (itemToUse) {
+				if (itemToUse.useAction) {
+					// TODO: the useAction variable will indicate what kind of thing
+					// will happen if the item is used on its own without a secondary object.
+				} else {
+					let secondaryObjectName = getObjectNameFromIndices(words, secondaryObjectStartIndex, words.length - 1);
+					// TODO: search for duplicates that could occur both in the room and the player's inventory. Right now we're just using the first match we get.
+					let secondaryItem = socket.data.inventory.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
+					if (!secondaryItem) // if it doesn't exist in the inventory, look for it in the room.
+						secondaryItem = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
+					if (secondaryItem) {
+						let events = secondaryItem.actions.find(action => action.commands.includes(verb))?.events;
+						let eventResponses = [];
+						if (events) {
+							for (eventObject of events) {
+								let actingItem = itemToUse;
+								let itemToBeActedOn = secondaryItem;
+								let eventResponse = interactableFunctions[eventObject.name](socket, eventObject, actingItem, itemToBeActedOn);
+								if (eventResponse !== undefined && eventResponse !== '')
+									eventResponses.push(eventResponse);
+							}
+						}
+						response = eventResponses.join(' ');
+					} else if (preposition)
+						response = "Use the " + objectName + " on what?";
+					else
+						response = "Using the " + objectName + " on its own won't accomplish anything.";
+				}
+			} else
+				response = objectName ? ("I don't know what \"" + objectName + "\" is in this context.") : 'Use what?';
+		}
 		else if (['say', 'speak', 'talk'].includes(verb)) {
 			let quote = unmodifiedWords.slice(verbIndex + 1).join(' ');
 			let m = socket.data.name + " says \"" + quote + "\"";
 			socket.to(socket.data.lobbyName).emit("messageSent", m);
 			response = "You said \"" + quote + "\"";
 			// TODO: make the players only able to talk to the players in the same game world room?
+		}
+		else if (verb !== '') {
+			let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
+			let primaryItem = socket.data.inventory.find(item => item.name === objectName || item.altNames?.includes(objectName));
+			if (!primaryItem) // if it doesn't exist in the inventory, look for it in the room.
+				primaryItem = gameRoom.interactables.find(item => item.name === objectName || item.altNames?.includes(objectName));
+			let secondaryObjectName = getObjectNameFromIndices(words, secondaryObjectStartIndex, words.length - 1);
+			let secondaryItem = socket.data.inventory.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
+			if (!secondaryItem) // if it doesn't exist in the inventory, look for it in the room.
+				secondaryItem = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
+
+			if (primaryItem) {
+				let events = primaryItem.actions?.find(action => action.commands.includes(verb))?.events;
+				let eventResponses = [];
+				if (events) {
+					for (eventObject of events) {
+						let actingItem;
+						if (secondaryItem)
+							actingItem = secondaryItem;
+						else if (secondaryObjectStartIndex !== -1)
+							actingItem = { name: secondaryObjectName, doesNotExist: true };
+						else
+							actingItem = { wasNotGiven: true };
+						let itemToBeActedOn = primaryItem;
+						let eventResponse = interactableFunctions[eventObject.name](socket, eventObject, actingItem, itemToBeActedOn);
+						if (eventResponse !== undefined && eventResponse !== '')
+							eventResponses.push(eventResponse);
+					}
+				}
+				if (eventResponses.length)
+					response = eventResponses.join(' ');
+				else
+					response = "It seems you can't " + verb + " the " + objectName
+					+ (secondaryItem ? (' with the ' + secondaryItem.name + '.') : '.');
+			}
+			else response = "I don't know what \"" + objectName + "\" is in this context.";
 		}
 		else response = "I didn't understand that.";
 
