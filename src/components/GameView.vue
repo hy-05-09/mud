@@ -107,7 +107,8 @@ export default {
 			</template>
       	</div>
 		<div id="userList">
-			<p class="clickable" @click="directMessage(index)" v-for="(user, index) of userList">{{user.name}} - {{user.room}}<br></p>
+			<!-- <p class="clickable" @click="directMessage(index)" v-for="(user, index) of userList">{{user.name}} - {{user.room}}<br></p> -->
+			 <p class="clickable" @click="directMessage(index)" v-for="(user, index) of userList">{{user}}<br></p>
 		</div>
     </div>
 	<form
