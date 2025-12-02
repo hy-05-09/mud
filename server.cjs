@@ -574,14 +574,16 @@ io.on("connection", function(socket) {
 				let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
 				if (itemToPlaceIndex != -1) {
 					if (container) {
-						// Remove the item from the player's inventory
-						let placedItem = socket.data.inventory.splice(itemToPlaceIndex, 1)[0];
-						// Push the item to the container
-						container.inventory.push(placedItem);
-						response = "You put the " + placedItem.name + " in the " + container.name;
-						for (user of await getSocketsInGameRoom(gameRoom)) {
-							socket.to(user.id).emit('event', socket.data.name + " just put " + placedItem.name + ' in the ' + container.name, 'user');
-						}
+						if (container.inventory) {
+							// Remove the item from the player's inventory
+							let placedItem = socket.data.inventory.splice(itemToPlaceIndex, 1)[0];
+							// Push the item to the container
+							container.inventory.push(placedItem);
+							response = "You put the " + placedItem.name + " in the " + container.name;
+							for (user of await getSocketsInGameRoom(gameRoom)) {
+								socket.to(user.id).emit('event', socket.data.name + " just put " + placedItem.name + ' in the ' + container.name, 'user');
+							}
+						} else response = secondaryObjectName + " doesn't seem to be a container";
 					} else response = "There doesn't seem to be a " + secondaryObjectName + " here.";
 				} else response = "You don't seem to be carrying that.";
 			}
