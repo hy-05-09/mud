@@ -362,6 +362,7 @@ const INITIAL_WORLD_DATA = [
 		interactables: [
 			{
 				name: 'refrigerator',
+				altNames: ['fridge'],
 				description: 'A white refrigerator with a freezer on top.',
 				canGet: false,
 				listOnLook: true,
