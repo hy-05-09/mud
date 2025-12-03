@@ -38,11 +38,11 @@ let adjectives = ["Best", "Happy", "Creepy", "Sappy"];
 let nouns = ["Programmer", "Developer", "Web dev", "Student", "Person"];
 
 // Game command parsing words:
-let verbs = ['l', 'look', 'examine', 'north', 'n', 'south', 's', 'east', 'e', 'west',
+let verbs = ['l', 'look','search', 'inspect', 'examine', 'north', 'n', 'south', 's', 'east', 'e', 'west',
 	'w', 'up', 'u', 'down', 'd', 'get', 'grab', 'take', 'drop', 'use', 'attack', 'hit',
 	'read', 'eat', 'drink', 'throw', 'jump', 'sit', 'whisper', 'say', 'yell', 'talk',
 	'speak', 'open', 'close', 'put', 'place', 'set', 'unlock', 'lock', 'turn',
-	'help', 'h', 'inventory', 'i']; // Make sure to handle "look at"
+	'help', 'h', 'inventory', 'i', 'inv',]; // Make sure to handle "look at"
 
 let prepositions = ['with', 'at', 'on', 'in', 'to', 'from', 'out'];
 
@@ -53,7 +53,7 @@ let lockVerbs = ['lock', 'close'];
 
 const MAX_USERS_PER_LOBBY = 4;
 
-const INITIAL_WORLD_START_ROOM = 'outside';
+const INITIAL_WORLD_START_ROOM = 'Forest';
 
 function setExitLockState(socket, eventObject, actingItem, itemToBeUnlocked, locked = false) {
 	let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
@@ -115,70 +115,517 @@ const interactableFunctions = {
 // This is the initial game data that each server-room starts with:
 const INITIAL_WORLD_DATA = [
 	{
-		name: 'kitchen',
-		description: 'You are standing in a kitchen with a table in the middle. There is a refrigerator here. There is a door to the north leading outside. There is a door leading to the east',
+		name: 'Forest',
+		description: 'You are in a dark forest. There is a path leading north.',
 		exits: [
 			{
-				destination: 'outside',
+				destination: 'Driveway',
 				direction: 'north'
+			}
+		],
+		interactables: [
+			{
+				name: 'Axe',
+				altNames: ['axe'],
+				description: 'A rusted axed with a wooden handle.',
+				positionalPhrase: ' lodged in a tree stump.',
+				canGet: true,
+				listOnLook: true,
+			}
+		]
+	},
+	{
+		name: 'Driveway',
+		description: 'You are standing at the end of a long gravel driveway. There is a house to the east and the forest to the south.',
+		exits: [
+			{
+				destination: 'Forest',
+				direction: 'south'
 			},
 			{
-				destination: 'locked-room',
+				destination: 'Front Porch',
+				direction: 'east'
+			}
+		],
+		interactables: [
+			{
+				name: 'mailbox',
+				description: 'A faded white mailbox with a broken flag.',
+				positionalPhrase: ' next to the driveway.',
+				canGet: false,
+				listOnLook: true,
+				inventory: [
+					{
+						name: 'Front Door Key',
+						altNames: ['front door key'],
+						description: 'A small brass key.',
+						keyId: 'front-door-key',
+						canGet: true,
+						listOnLook: false
+					}
+				]
+			},
+		],
+
+	},
+	{
+		name: 'Front Porch',
+		description: 'You are standing on the front porch of a small house. There is a door to the east leading inside, a garden on the north of the house and the driveway is to the west.',
+		exits: [
+			{
+				destination: 'Driveway',
+				direction: 'west'
+			},
+			{
+				destination: 'Living Room',
+				direction: 'east',
+				isLocked: true,
+				neededKeyId: 'front-door-key'
+			},
+			{
+				destination: 'Garden',
+				direction: 'north'
+			}
+		],
+		interactables: [
+			{
+				name: 'Front Door',
+				altNames: ['door'],
+				description: "It's a wooden front door with a brass doorknob.",
+				neededKeyId: 'front-door-key',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Living Room'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Living Room'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Living Room'
+						}]
+					}
+				]
+			}
+		]
+	},
+	{
+		name: 'Living Room',
+		description: 'You are in a abandoned living room. There is a door to the west leading to the front porch. There\'s rooms to the north and south.',
+		exits: [
+			{
+				destination: 'Front Porch',
+				direction: 'west',
+				isLocked: true,
+				neededKeyId: 'front-door-key'
+			},
+			{
+				destination: 'Kitchen',
+				direction: 'south'
+			},
+			{
+				destination: 'Bedroom',
+				direction: 'north'
+			}
+		],
+		interactables: [
+			{
+				name: 'couch',
+				description: 'A dusty old couch with torn upholstery.',
+				positionalPhrase: ' in the middle of the room.',
+				canGet: false,
+				listOnLook: true,
+				inventory: []
+			},
+			{
+				name: 'Front Door',
+				altNames: ['door'],
+				description: "It's a wooden front door with a brass doorknob.",
+				neededKeyId: 'front-door-key',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Front Porch'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Front Porch'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Front Porch'
+						}]
+					}
+				]
+			}
+
+		]
+	},
+	{
+		name: 'Bedroom',
+		description: 'You are in a small bedroom. There is a bathroom to the east and the living room to the south.',
+		exits: [
+			{
+				destination: 'Living Room',
+				direction: 'south'
+			},
+			{
+				destination: 'Bathroom',
 				direction: 'east',
 				isLocked: true,
 			}
 		],
 		interactables: [
 			{
-				name: 'refrigerator',
-				altNames: ['fridge'],
-				description: 'It is a refrigerator with two doors, a freezer being on the bottom',
+				name: 'bed',
+				description: 'A small bed with a thin mattress.',
 				canGet: false,
-				listOnLook: false,
+				listOnLook: true,
+				positionalPhrase: ' against the wall.'
+			},
+			{
+				name: 'nightstand',
+				altNames: ['dresser'],
+				description: 'A small wooden nightstand with a drawer.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' next to the bed.',
 				inventory: [
 					{
-						name: 'milk jug',
-						altNames: ['milk', 'jug', 'jug of milk', 'gallon of milk'],
-						description: "It's a gallon jug of 2% milk.",
+						name: 'Cellar Key',
+						altNames: ['cellar key'],
+						description: 'A small iron key.',
+						keyId: 'cellar-key',
+						canGet: true,
+						listOnLook: false
+					}
+				]
+			},
+			{
+				name: 'Bathroom Door',
+				altNames: ['door', 'bathroom door'],
+				description: "It's a door that leads to the bathroom.",
+				neededKeyId: 'bathroom-key',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Bathroom'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Bathroom'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Bathroom'
+						}]
+					}
+				]
+			}
+		]
+	},
+	{
+		name: 'Kitchen',
+		description: 'You are in a small kitchen. There is a table in the middle of the room and a door to the north leading back to the living room.',
+		exits: [
+			{
+				destination: 'Living Room',
+				direction: 'north'
+			}
+		],
+		interactables: [
+			{
+				name: 'refrigerator',
+				description: 'A white refrigerator with a freezer on top.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' against the wall.',
+				inventory: [
+					{
+						name: 'Milk Jug',
+						altNames: ['milk', 'jug', 'milk jug'],
+						description: 'A half-empty jug of milk.',
+						canGet: true,
+						listOnLook: false
+					}
+				]
+			},
+			{
+				name: 'table',
+				description: 'A wooden table with a few chairs around it.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' in the middle of the room.'
+			}
+		]
+	},
+	{
+		name: 'Bathroom',
+		description: 'You are in a small bathroom. There is a sink, a toilet, and a shower. The bedroom is to the west.',
+		exits: [
+			{
+				destination: 'Bedroom',
+				direction: 'west',
+				isLocked: true,
+			}
+		],
+		interactables: [
+			{
+				name: 'sink',
+				description: 'A white porcelain sink with a mirror above it.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' against the wall.'
+			},
+			{
+				name: 'toilet',
+				description: 'A white porcelain toilet.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' next to the sink.',
+				inventory: [
+					{
+						name: 'Key Card',
+						altNames: ['keycard', 'key card'],
+						keyId: 'keycard',
+						description: 'A plastic key card with a magnetic strip.',
+						canGet: true,
+						listOnLook: false
+					}
+				]
+			},
+			{
+				name: 'shower',
+				description: 'A white tiled shower with a glass door.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' in the corner.'
+			},
+			{
+				name: 'Bathroom Door',
+				altNames: ['door', 'bathroom door'],
+				description: "It's a door that leads to the bathroom.",
+				neededKeyId: 'bathroom-key',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Bedroom'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Bedroom'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Bedroom'
+						}]
+					}
+				]
+			}
+		]
+	},
+	{
+		name: 'Garden',
+		description: 'You are in a small garden built next to the side of the house. There is a cellar door to the east. The front porch is to the south.',
+		exits: [
+			{
+				destination: 'Front Porch',
+				direction: 'south'
+			},
+			{
+				destination: 'Cellar',
+				direction: 'east',
+				isLocked: true,
+			}
+		],
+		interactables: [
+			{
+				name: 'Cellar Door',
+				altNames: ['door', 'cellar door'],
+				description: "It's a wooden door set into the ground with a rusty handle.",
+				neededKeyId: 'cellar-key',
+				positionalPhrase: ' set into the ground.',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Cellar'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Cellar'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Cellar'
+						}]
+					}
+				]
+			},
+			{
+				name: 'flower bed',
+				description: 'A small flower bed with a few blooming flowers.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' against the house wall.',
+				inventory: [
+					{
+						name: 'Flower',
+						altNames: ['flower'],
+						description: 'A really beautiful red flower.',
+						canGet: true,
+						listOnLook: true
+					}
+				]
+			}
+		]
+	},
+	{
+		name: 'Cellar',
+		description: 'You are in a dark cellar. There is a staircase to the west leading up to the garden and a secure door to the south.',
+		exits: [
+			{
+				destination: 'Garden',
+				direction: 'west',
+				isLocked: true,
+			},
+			{
+				destination: 'Research Facility',
+				direction: 'south',
+				isLocked: true,
+			}
+		],
+		interactables: [
+			{
+				name: 'crate',
+				description: 'A wooden crate filled with old junk.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' in the corner.',
+				inventory: [
+					{
+						name: 'Old Book',
+						altNames: ['book', 'old book'],
+						description: 'A dusty old book with a leather cover.',
+						canGet: true,
+						listOnLook: true
+					},
+					{
+						name: 'Bathroom key',
+						altNames: ['bathroom key'],
+						description: 'A small brass key.',
+						keyId: 'bathroom-key',
 						canGet: true,
 						listOnLook: true
 					}
 				]
 			},
 			{
-				name: 'old key',
-				altNames: ['key'],
-				keyId: 'old-room-key',
-				description: 'It is an old key',
-				positionalPhrase: ' sitting on the table.', // This is used to describe where the object is in the room.
-				canGet: true,
-				listOnLook: true, // If this is true, the item will be tacked on to the room description
+				name: 'garbage pile',
+				description: 'A pile of garbage bags and old furniture.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' against the wall.'
 			},
 			{
-				name: 'door',
-				altNames: ['old door', 'old wooden door', 'wooden door'], // TODO: fuzzy matches, so if the user says wooden door but the alt names doesn't have that one
-				description: "It's an old wooden door",
-				neededKeyId: "old-room-key",
+				name: 'Cellar Door',
+				altNames: ['door', 'cellar door'],
+				description: "It's a wooden door set into the ground with a rusty handle.",
+				neededKeyId: 'cellar-key',
 				actions: [
 					{
 						commands: ['use'],
 						events: [{
 							name: 'toggleLockExit',
-							target: 'locked-room'
+							target: 'Garden'
 						}]
 					},
 					{
 						commands: lockVerbs,
 						events: [{
 							name: 'lockExit',
-							target: 'locked-room'
+							target: 'Garden'
 						}]
 					},
 					{
 						commands: unlockVerbs,
 						events: [{
 							name: 'unlockExit',
-							target: 'locked-room'
+							target: 'Garden'
+						}]
+					}
+				]
+			},
+			{
+				name: 'Keycard terminal',
+				altNames: ['terminal', 'keycard terminal'],
+				description: 'A high-tech terminal that requires a keycard to access the research facility.',
+				positionalPhrase: ' on the wall',
+				canGet: false,
+				listOnLook: true,
+				neededKeyId: 'keycard',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'unlockExit',
+							target: 'Research Facility'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Research Facility'
+						}]
+
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Research Facility'
 						}]
 					}
 				]
@@ -186,63 +633,79 @@ const INITIAL_WORLD_DATA = [
 		]
 	},
 	{
-		// TODO: this room should need to be unlocked with a key
-		name: 'locked-room',
-		description: 'You are in the room that used to be locked. TODO: make a description for this room',
+		name: 'Research Facility',
+		description: 'You are in a high-tech research facility. There are computers and lab equipment everywhere. The cellar is to the north.',
 		exits: [
 			{
-				destination: 'kitchen',
-				direction: 'west',
-				isLocked: true,
-				// neededKey: 'old-room-key'
+				destination: 'Cellar',
+				direction: 'north'
 			}
 		],
 		interactables: [
 			{
-				name: 'door',
-				// TODO: maybe with the database, this INITIAL_WORLD_DATA could be restructured so that it doesn't need duplicate items for things like locked doors
-				altNames: ['old door', 'old wooden door', 'wooden door'], // TODO: fuzzy matches, so if the user says wooden door but the alt names doesn't have that one
-				description: "It's an old wooden door",
-				neededKeyId: "old-room-key",
-				actions: [
+				name: 'computer',
+				description: 'A sleek computer with a glowing screen.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' on a metal desk.'
+			},
+			{
+				name: 'Disected Alien',
+				altNames: ['alien', 'disected alien'],
+				description: 'A strange alien creature that has been disected for research purposes.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' on an operating table.',
+				inventory: [
 					{
-						commands: ['use'],
-						events: [{
-							name: 'toggleLockExit',
-							target: 'kitchen'
-						}]
-					},
-					{
-						commands: lockVerbs,
-						events: [{
-							name: 'lockExit',
-							target: 'kitchen'
-						}]
-					},
-					{
-						commands: unlockVerbs,
-						events: [{
-							name: 'unlockExit',
-							target: 'kitchen'
-						}]
+						name: 'Alien Heart',
+						altNames: ['heart', 'alien heart'],
+						description: 'A pulsating alien heart that glows with an otherworldly light.',
+						canGet: true,
+						listOnLook: true
 					}
 				]
-			}
-		]
-	},
-	{
-		name: 'outside',
-		description: 'You are outside. There is a door to the south leading to the kitchen.',
-		exits: [
+			},
 			{
-				destination: 'kitchen',
-				direction: 'south'
-			}
-		],
-		interactables: [
-			{
-				name: 'test object',
+				name: 'Torn Experiment Note',
+				altNames: ['log', 'experiment log'],
+				description: 'A torn peice of paper that reads : "We fear what we don\'t understand."',
 				canGet: true,
+				listOnLook: true,
+				positionalPhrase: ' on the floor.'
+			},
+			{
+				name: 'Keycard terminal',
+				altNames: ['terminal', 'keycard terminal'],
+				description: 'A high-tech terminal that requires a keycard to access the research facility.',
+				positionalPhrase: ' on the wall',
+				neededKeyId: 'keycard',
+				canGet: false,
+				listOnLook: true,
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'unlockExit',
+							target: 'Research Facility'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Research Facility'
+						}]
+
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Research Facility'
+						}]
+					}
+				]
 			}
 		]
 	}
@@ -439,7 +902,7 @@ io.on("connection", function(socket) {
 		if (['l', 'look'].includes(verb)) {
 			response = getRoomDescription(gameRoom);
 		}
-		else if (['examine', 'look at'].includes(verb)) {
+		else if (['examine', 'look at', 'inspect', 'search'].includes(verb)) {
 			let itemToExamine = socket.data.inventory.find(item => item.name === objectName || item.altNames?.includes(objectName));
 			if (!itemToExamine) // if it doesn't exist in the inventory, look for it in the room.
 				itemToExamine = gameRoom.interactables.find(item => item.name === objectName || item.altNames?.includes(objectName));
@@ -500,12 +963,12 @@ io.on("connection", function(socket) {
 			} else
 				response = "There is no exit in that direction";
 		}
-		else if (['inventory', 'i'].includes(verb)) {
+		else if (['inventory', 'i', 'inv'].includes(verb)) {
 			socket.emit('commandResponse',
 				"You are carrying: " + (socket.data.inventory.length ? socket.data.inventory.map(item => item?.name).join(", ") : 'nothing')
 			);
 		}
-		else if (['get', 'take'].includes(verb)) {
+		else if (['get', 'take', 'grab'].includes(verb)) {
 			if (objectName !== '') {
 				if (preposition !== '') {
 					let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
