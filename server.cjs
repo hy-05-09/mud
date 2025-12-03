@@ -190,7 +190,7 @@ const INITIAL_WORLD_DATA = [
 		interactables: [
 			{
 				name: 'Front Door',
-				altNames: ['door'],
+				altNames: ['front door'],
 				description: "It's a wooden front door with a brass doorknob.",
 				neededKeyId: 'front-door-key',
 				actions: [
@@ -249,7 +249,7 @@ const INITIAL_WORLD_DATA = [
 			},
 			{
 				name: 'Front Door',
-				altNames: ['door'],
+				altNames: ['front door'],
 				description: "It's a wooden front door with a brass doorknob.",
 				neededKeyId: 'front-door-key',
 				actions: [
@@ -982,7 +982,10 @@ io.on("connection", function(socket) {
 								socket.data.inventory.push(takenItem);
 								response = "You took the " + takenItem.name;
 								// Remove the positionalPhrase from the item
-								takenItem.positionalPhrase = '';
+								takenItem.positionalPhrase = ''
+								if (takenItem.name == 'Alien Heart') {
+									io.to(socket.data.lobbyName).emit('event', socket.data.name + " has discovered the " + takenItem.name + ". They have won the game!", 'user');
+								}
 								for (user of await getSocketsInGameRoom(gameRoom)) {
 									socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
 								}
