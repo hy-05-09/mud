@@ -683,6 +683,12 @@ io.on("connection", async function(socket) {
 						let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
 						// Push the item to the player's inventory
 						socket.data.inventory.push(takenItem);
+
+						await db.collection("users").updateOne(
+							{username: socket.data.name},
+							{$set: {inventory: socket.data.inventory}}
+						);
+
 						response = "You took the " + takenItem.name;
 						// Remove the positionalPhrase from the item
 						takenItem.positionalPhrase = '';
@@ -709,6 +715,11 @@ io.on("connection", async function(socket) {
 					let droppedItem = socket.data.inventory.splice(itemToDropIndex, 1)[0];
 					// Push the item to the gameRoom
 					gameRoom.interactables.push(droppedItem);
+
+					await db.collection("users").updateOne(
+						{username: socket.data.name},
+						{$set: {inventory: socket.data.inventory}}
+					);
 					response = "You dropped the " + droppedItem.name + " on the ground.";
 					droppedItem.positionalPhrase = " on the ground."
 					for (user of await getSocketsInGameRoom(gameRoom)) {
