@@ -38,13 +38,13 @@ let adjectives = ["Best", "Happy", "Creepy", "Sappy"];
 let nouns = ["Programmer", "Developer", "Web dev", "Student", "Person"];
 
 // Game command parsing words:
-let verbs = ['l', 'look', 'examine', 'north', 'n', 'south', 's', 'east', 'e', 'west',
+let verbs = ['l', 'look','search', 'inspect', 'examine', 'north', 'n', 'south', 's', 'east', 'e', 'west',
 	'w', 'up', 'u', 'down', 'd', 'get', 'grab', 'take', 'drop', 'use', 'attack', 'hit',
 	'read', 'eat', 'drink', 'throw', 'jump', 'sit', 'whisper', 'say', 'yell', 'talk',
 	'speak', 'open', 'close', 'put', 'place', 'set', 'unlock', 'lock', 'turn',
-	'help', 'h', 'inventory', 'i']; // Make sure to handle "look at"
+	'help', 'h', 'inventory', 'i', 'inv',]; // Make sure to handle "look at"
 
-let prepositions = ['with', 'at', 'on', 'in', 'to'];
+let prepositions = ['with', 'at', 'on', 'in', 'to', 'from', 'out'];
 
 let articles = ['a', 'an', 'the', 'these', 'those', 'this', 'that'];
 
@@ -53,7 +53,7 @@ let lockVerbs = ['lock', 'close'];
 
 const MAX_USERS_PER_LOBBY = 4;
 
-const INITIAL_WORLD_START_ROOM = 'outside';
+const INITIAL_WORLD_START_ROOM = 'Forest';
 
 function setExitLockState(socket, eventObject, actingItem, itemToBeUnlocked, locked = false) {
 	let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
@@ -115,106 +115,344 @@ const interactableFunctions = {
 // This is the initial game data that each server-room starts with:
 const INITIAL_WORLD_DATA = [
 	{
-		name: 'kitchen',
-		description: 'You are standing in a kitchen with a table in the middle. There is a refrigerator here. There is a door to the north leading outside. There is a door leading to the east',
+		name: 'Forest',
+		description: 'You are in a dark forest. There is a path leading north.',
 		exits: [
 			{
-				destination: 'outside',
+				destination: 'Driveway',
 				direction: 'north'
+			}
+		],
+		interactables: [
+			{
+				name: 'Axe',
+				altNames: ['axe'],
+				description: 'A rusted axed with a wooden handle.',
+				positionalPhrase: ' lodged in a tree stump.',
+				canGet: true,
+				listOnLook: true,
+			}
+		]
+	},
+	{
+		name: 'Driveway',
+		description: 'You are standing at the end of a long gravel driveway. There is a house to the east and the forest to the south.',
+		exits: [
+			{
+				destination: 'Forest',
+				direction: 'south'
 			},
 			{
-				destination: 'locked-room',
+				destination: 'Front Porch',
+				direction: 'east'
+			}
+		],
+		interactables: [
+			{
+				name: 'mailbox',
+				description: 'A faded white mailbox with a broken flag.',
+				positionalPhrase: ' next to the driveway.',
+				canGet: false,
+				listOnLook: true,
+				inventory: [
+					{
+						name: 'Front Door Key',
+						altNames: ['front door key'],
+						description: 'A small brass key.',
+						keyId: 'front-door-key',
+						canGet: true,
+						listOnLook: false
+					}
+				]
+			},
+		],
+
+	},
+	{
+		name: 'Front Porch',
+		description: 'You are standing on the front porch of a small house. There is a door to the east leading inside, a garden on the north of the house and the driveway is to the west.',
+		exits: [
+			{
+				destination: 'Driveway',
+				direction: 'west'
+			},
+			{
+				destination: 'Living Room',
+				direction: 'east',
+				isLocked: true,
+				neededKeyId: 'front-door-key'
+			},
+			{
+				destination: 'Garden',
+				direction: 'north'
+			}
+		],
+		interactables: [
+			{
+				name: 'Front Door',
+				altNames: ['front door'],
+				description: "It's a wooden front door with a brass doorknob.",
+				neededKeyId: 'front-door-key',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Living Room'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Living Room'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Living Room'
+						}]
+					}
+				]
+			}
+		]
+	},
+	{
+		name: 'Living Room',
+		description: 'You are in a abandoned living room. There is a door to the west leading to the front porch. There\'s rooms to the north and south.',
+		exits: [
+			{
+				destination: 'Front Porch',
+				direction: 'west',
+				isLocked: true,
+				neededKeyId: 'front-door-key'
+			},
+			{
+				destination: 'Kitchen',
+				direction: 'south'
+			},
+			{
+				destination: 'Bedroom',
+				direction: 'north'
+			}
+		],
+		interactables: [
+			{
+				name: 'couch',
+				description: 'A dusty old couch with torn upholstery.',
+				positionalPhrase: ' in the middle of the room.',
+				canGet: false,
+				listOnLook: true,
+				inventory: []
+			},
+			{
+				name: 'Front Door',
+				altNames: ['front door'],
+				description: "It's a wooden front door with a brass doorknob.",
+				neededKeyId: 'front-door-key',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Front Porch'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Front Porch'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Front Porch'
+						}]
+					}
+				]
+			}
+
+		]
+	},
+	{
+		name: 'Bedroom',
+		description: 'You are in a small bedroom. There is a bathroom to the east and the living room to the south.',
+		exits: [
+			{
+				destination: 'Living Room',
+				direction: 'south'
+			},
+			{
+				destination: 'Bathroom',
 				direction: 'east',
 				isLocked: true,
 			}
 		],
 		interactables: [
 			{
+				name: 'bed',
+				description: 'A small bed with a thin mattress.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' against the wall.'
+			},
+			{
+				name: 'nightstand',
+				altNames: ['dresser'],
+				description: 'A small wooden nightstand with a drawer.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' next to the bed.',
+				inventory: [
+					{
+						name: 'Cellar Key',
+						altNames: ['cellar key'],
+						description: 'A small iron key.',
+						keyId: 'cellar-key',
+						canGet: true,
+						listOnLook: false
+					}
+				]
+			},
+			{
+				name: 'Bathroom Door',
+				altNames: ['door', 'bathroom door'],
+				description: "It's a door that leads to the bathroom.",
+				neededKeyId: 'bathroom-key',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Bathroom'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Bathroom'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Bathroom'
+						}]
+					}
+				]
+			}
+		]
+	},
+	{
+		name: 'Kitchen',
+		description: 'You are in a small kitchen. There is a table in the middle of the room and a door to the north leading back to the living room.',
+		exits: [
+			{
+				destination: 'Living Room',
+				direction: 'north'
+			}
+		],
+		interactables: [
+			{
 				name: 'refrigerator',
 				altNames: ['fridge'],
-				description: 'It is a refrigerator with two doors, a freezer being on the bottom',
+				description: 'A white refrigerator with a freezer on top.',
 				canGet: false,
-				listOnLook: false,
-			},
-			{
-				name: 'old key',
-				altNames: ['key'],
-				keyId: 'old-room-key',
-				description: 'It is an old key',
-				positionalPhrase: ' sitting on the table.', // This is used to describe where the object is in the room.
-				canGet: true,
-				listOnLook: true, // If this is true, the item will be tacked on to the room description
-			},
-			{
-				name: 'door',
-				altNames: ['old door', 'old wooden door', 'wooden door'], // TODO: fuzzy matches, so if the user says wooden door but the alt names doesn't have that one
-				description: "It's an old wooden door",
-				neededKeyId: "old-room-key",
-				actions: [
+				listOnLook: true,
+				positionalPhrase: ' against the wall.',
+				inventory: [
 					{
-						commands: ['use'],
-						events: [{
-							name: 'toggleLockExit',
-							target: 'locked-room'
-						}]
-					},
-					{
-						commands: lockVerbs,
-						events: [{
-							name: 'lockExit',
-							target: 'locked-room'
-						}]
-					},
-					{
-						commands: unlockVerbs,
-						events: [{
-							name: 'unlockExit',
-							target: 'locked-room'
-						}]
+						name: 'Milk Jug',
+						altNames: ['milk', 'jug', 'milk jug'],
+						description: 'A half-empty jug of milk.',
+						canGet: true,
+						listOnLook: false
 					}
 				]
+			},
+			{
+				name: 'table',
+				description: 'A wooden table with a few chairs around it.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' in the middle of the room.'
 			}
 		]
 	},
 	{
-		// TODO: this room should need to be unlocked with a key
-		name: 'locked-room',
-		description: 'You are in the room that used to be locked. TODO: make a description for this room',
+		name: 'Bathroom',
+		description: 'You are in a small bathroom. There is a sink, a toilet, and a shower. The bedroom is to the west.',
 		exits: [
 			{
-				destination: 'kitchen',
+				destination: 'Bedroom',
 				direction: 'west',
 				isLocked: true,
-				// neededKey: 'old-room-key'
 			}
 		],
 		interactables: [
 			{
-				name: 'door',
-				// TODO: maybe with the database, this INITIAL_WORLD_DATA could be restructured so that it doesn't need duplicate items for things like locked doors
-				altNames: ['old door', 'old wooden door', 'wooden door'], // TODO: fuzzy matches, so if the user says wooden door but the alt names doesn't have that one
-				description: "It's an old wooden door",
-				neededKeyId: "old-room-key",
+				name: 'sink',
+				description: 'A white porcelain sink with a mirror above it.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' against the wall.'
+			},
+			{
+				name: 'toilet',
+				description: 'A white porcelain toilet.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' next to the sink.',
+				inventory: [
+					{
+						name: 'Key Card',
+						altNames: ['keycard', 'key card'],
+						keyId: 'keycard',
+						description: 'A plastic key card with a magnetic strip.',
+						canGet: true,
+						listOnLook: false
+					}
+				]
+			},
+			{
+				name: 'shower',
+				description: 'A white tiled shower with a glass door.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' in the corner.'
+			},
+			{
+				name: 'Bathroom Door',
+				altNames: ['door', 'bathroom door'],
+				description: "It's a door that leads to the bathroom.",
+				neededKeyId: 'bathroom-key',
 				actions: [
 					{
 						commands: ['use'],
 						events: [{
 							name: 'toggleLockExit',
-							target: 'kitchen'
+							target: 'Bedroom'
 						}]
 					},
 					{
 						commands: lockVerbs,
 						events: [{
 							name: 'lockExit',
-							target: 'kitchen'
+							target: 'Bedroom'
 						}]
 					},
 					{
 						commands: unlockVerbs,
 						events: [{
 							name: 'unlockExit',
-							target: 'kitchen'
+							target: 'Bedroom'
 						}]
 					}
 				]
@@ -222,18 +460,253 @@ const INITIAL_WORLD_DATA = [
 		]
 	},
 	{
-		name: 'outside',
-		description: 'You are outside. There is a door to the south leading to the kitchen.',
+		name: 'Garden',
+		description: 'You are in a small garden built next to the side of the house. There is a cellar door to the east. The front porch is to the south.',
 		exits: [
 			{
-				destination: 'kitchen',
+				destination: 'Front Porch',
 				direction: 'south'
+			},
+			{
+				destination: 'Cellar',
+				direction: 'east',
+				isLocked: true,
 			}
 		],
 		interactables: [
 			{
-				name: 'test object',
+				name: 'Cellar Door',
+				altNames: ['door', 'cellar door'],
+				description: "It's a wooden door set into the ground with a rusty handle.",
+				neededKeyId: 'cellar-key',
+				positionalPhrase: ' set into the ground.',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Cellar'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Cellar'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Cellar'
+						}]
+					}
+				]
+			},
+			{
+				name: 'flower bed',
+				description: 'A small flower bed with a few blooming flowers.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' against the house wall.',
+				inventory: [
+					{
+						name: 'Flower',
+						altNames: ['flower'],
+						description: 'A really beautiful red flower.',
+						canGet: true,
+						listOnLook: true
+					}
+				]
+			}
+		]
+	},
+	{
+		name: 'Cellar',
+		description: 'You are in a dark cellar. There is a staircase to the west leading up to the garden and a secure door to the south.',
+		exits: [
+			{
+				destination: 'Garden',
+				direction: 'west',
+				isLocked: true,
+			},
+			{
+				destination: 'Research Facility',
+				direction: 'south',
+				isLocked: true,
+			}
+		],
+		interactables: [
+			{
+				name: 'crate',
+				description: 'A wooden crate filled with old junk.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' in the corner.',
+				inventory: [
+					{
+						name: 'Old Book',
+						altNames: ['book', 'old book'],
+						description: 'A dusty old book with a leather cover.',
+						canGet: true,
+						listOnLook: true
+					},
+					{
+						name: 'Bathroom key',
+						altNames: ['bathroom key'],
+						description: 'A small brass key.',
+						keyId: 'bathroom-key',
+						canGet: true,
+						listOnLook: true
+					}
+				]
+			},
+			{
+				name: 'garbage pile',
+				description: 'A pile of garbage bags and old furniture.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' against the wall.'
+			},
+			{
+				name: 'Cellar Door',
+				altNames: ['door', 'cellar door'],
+				description: "It's a wooden door set into the ground with a rusty handle.",
+				neededKeyId: 'cellar-key',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Garden'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Garden'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Garden'
+						}]
+					}
+				]
+			},
+			{
+				name: 'Keycard terminal',
+				altNames: ['terminal', 'keycard terminal'],
+				description: 'A high-tech terminal that requires a keycard to access the research facility.',
+				positionalPhrase: ' on the wall',
+				canGet: false,
+				listOnLook: true,
+				neededKeyId: 'keycard',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'unlockExit',
+							target: 'Research Facility'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Research Facility'
+						}]
+
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Research Facility'
+						}]
+					}
+				]
+			}
+		]
+	},
+	{
+		name: 'Research Facility',
+		description: 'You are in a high-tech research facility. There are computers and lab equipment everywhere. The cellar is to the north.',
+		exits: [
+			{
+				destination: 'Cellar',
+				direction: 'north'
+			}
+		],
+		interactables: [
+			{
+				name: 'computer',
+				description: 'A sleek computer with a glowing screen.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' on a metal desk.'
+			},
+			{
+				name: 'Disected Alien',
+				altNames: ['alien', 'disected alien'],
+				description: 'A strange alien creature that has been disected for research purposes.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' on an operating table.',
+				inventory: [
+					{
+						name: 'Alien Heart',
+						altNames: ['heart', 'alien heart'],
+						description: 'A pulsating alien heart that glows with an otherworldly light.',
+						canGet: true,
+						listOnLook: true
+					}
+				]
+			},
+			{
+				name: 'Torn Experiment Note',
+				altNames: ['log', 'experiment log'],
+				description: 'A torn peice of paper that reads : "We fear what we don\'t understand."',
 				canGet: true,
+				listOnLook: true,
+				positionalPhrase: ' on the floor.'
+			},
+			{
+				name: 'Keycard terminal',
+				altNames: ['terminal', 'keycard terminal'],
+				description: 'A high-tech terminal that requires a keycard to access the research facility.',
+				positionalPhrase: ' on the wall',
+				neededKeyId: 'keycard',
+				canGet: false,
+				listOnLook: true,
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'unlockExit',
+							target: 'Research Facility'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Research Facility'
+						}]
+
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Research Facility'
+						}]
+					}
+				]
 			}
 		]
 	}
@@ -266,7 +739,7 @@ io.on("connection", function(socket) {
 
 
 	// Leave the current lobby
-	function leaveLobbyInternal(socket){
+	function leaveLobbyInternal(socket) {
 		const lobbyName = socket.data.lobbyName;
 		if (!lobbyName) return;
 
@@ -287,7 +760,10 @@ io.on("connection", function(socket) {
 		io.to(socket.data.lobbyName).emit("userLeftLobby", socket.data.name);
 		let currentLobby = lobbies.find(room => room.name === socket.data.lobbyName);
 		if (currentLobby) {
-			// Remove this user
+			let gameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
+			// Drop this user's items in the game room
+			gameRoom.interactables = gameRoom.interactables.concat(socket.data.inventory);
+
 			currentLobby.users = currentLobby.users.filter(u => u.name !== socket.data.name);
 
 			io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
@@ -368,14 +844,21 @@ io.on("connection", function(socket) {
 		let index = 0;
 		for (word of words) {
 			if (prepositions.includes(word)) {
-				if (verb === '') {
+				if (verb === 'look' && word === 'at' && objectStartIndex === -1) {
+					verb = "look at";
+				}
+				else if (verb === '') {
 					socket.emit('commandResponse', 'Your command must contain a verb.');
 					return;
 				}
-				if (preposition === '') {
+				else if (preposition === '') {
 					if (objectStartIndex !== -1) {
 						preposition = word;
 						objectEndIndex = index - 1;
+						if (word === 'out' && ['of', 'from'].includes(words[index + 1])) {
+							preposition += " " + words[index + 1];
+							index += 1;
+						}
 						if (articles.includes(words[index + 1]))
 							// If there is an article, skip to the next index
 							secondaryObjectStartIndex = index + 2;
@@ -411,11 +894,30 @@ io.on("connection", function(socket) {
 			index += 1;
 		}
 
+		let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
+		let secondaryObjectName = getObjectNameFromIndices(words, secondaryObjectStartIndex, words.length - 1);
 		let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
 		let gameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
 		let response = '';
+		// console.log(objectName + " " + preposition + " ", secondaryObjectName);
 		if (['l', 'look'].includes(verb)) {
 			response = getRoomDescription(gameRoom);
+		}
+		else if (['examine', 'look at', 'inspect', 'search'].includes(verb)) {
+			let itemToExamine = socket.data.inventory.find(item => item.name === objectName || item.altNames?.includes(objectName));
+			if (!itemToExamine) // if it doesn't exist in the inventory, look for it in the room.
+				itemToExamine = gameRoom.interactables.find(item => item.name === objectName || item.altNames?.includes(objectName));
+			if (itemToExamine?.description) {
+				response = itemToExamine?.description;
+				if (itemToExamine.inventory) {
+					response += " It contains: ";
+					if (itemToExamine.inventory.length > 0)
+						response += itemToExamine.inventory.map(item => item.name).join(', ');
+					else
+						response += "nothing.";
+				}
+			} else
+				response = "There doesn't appear to be a " + objectName + " here.";
 		}
 		else if (['help', 'h'].includes(verb)) {
 			response = "TODO: output some text to help the user.";
@@ -462,34 +964,58 @@ io.on("connection", function(socket) {
 			} else
 				response = "There is no exit in that direction";
 		}
-		else if (['inventory', 'i'].includes(verb)) {
+		else if (['inventory', 'i', 'inv'].includes(verb)) {
 			socket.emit('commandResponse',
 				"You are carrying: " + (socket.data.inventory.length ? socket.data.inventory.map(item => item?.name).join(", ") : 'nothing')
 			);
 		}
-		else if (['get', 'take'].includes(verb)) {
-			let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
+		else if (['get', 'take', 'grab'].includes(verb)) {
 			if (objectName !== '') {
-				let itemToTakeIndex = gameRoom.interactables.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
-				if (itemToTakeIndex != -1) {
-					if (gameRoom.interactables[itemToTakeIndex].canGet) {
-						// Remove the item from the gameRoom
-						let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
-						// Push the item to the player's inventory
-						socket.data.inventory.push(takenItem);
-						response = "You took the " + takenItem.name;
-						// Remove the positionalPhrase from the item
-						takenItem.positionalPhrase = '';
-						for (user of await getSocketsInGameRoom(gameRoom)) {
-							socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
-						}
-					} else response = "You can't take that!";
-				} else response = "There doesn't seem to be one of those here.";
+				if (preposition !== '') {
+					let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
+					if (container) {
+						let itemToTakeIndex = container?.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+						if (itemToTakeIndex != -1) {
+							if (container.inventory[itemToTakeIndex].canGet) {
+								// Remove the item from the gameRoom
+								let takenItem = container.inventory.splice(itemToTakeIndex, 1)[0];
+								// Push the item to the player's inventory
+								socket.data.inventory.push(takenItem);
+								response = "You took the " + takenItem.name;
+								// Remove the positionalPhrase from the item
+								takenItem.positionalPhrase = ''
+								if (takenItem.name == 'Alien Heart') {
+									io.to(socket.data.lobbyName).emit('event', socket.data.name + " has discovered the " + takenItem.name + ". They have won the game!", 'user');
+								}
+								for (user of await getSocketsInGameRoom(gameRoom)) {
+									socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+								}
+							} else response = "You can't take the " + objectName + "!";
+						} else response = "The " + secondaryObjectName + " doesn't contain \"" + objectName + "\".";
+					} else
+						response = "From what?";
+				}
+				else {
+					let itemToTakeIndex = gameRoom.interactables.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+					if (itemToTakeIndex != -1) {
+						if (gameRoom.interactables[itemToTakeIndex].canGet) {
+							// Remove the item from the gameRoom
+							let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
+							// Push the item to the player's inventory
+							socket.data.inventory.push(takenItem);
+							response = "You took the " + takenItem.name;
+							// Remove the positionalPhrase from the item
+							takenItem.positionalPhrase = '';
+							for (user of await getSocketsInGameRoom(gameRoom)) {
+								socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+							}
+						} else response = "You can't take the " + objectName + "!";
+					} else response = "There doesn't seem to be \"" + objectName + "\" here.";
+				}
 			}
 			else response = verb + " what?";
 		}
 		else if (verb === 'drop') {
-			let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
 			if (objectName !== '') {
 				// Find the index of the item to drop
 				let itemToDropIndex = socket.data.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
@@ -503,13 +1029,35 @@ io.on("connection", function(socket) {
 					for (user of await getSocketsInGameRoom(gameRoom)) {
 						socket.to(user.id).emit('event', socket.data.name + " just dropped " + droppedItem.name, 'user');
 					}
+				} else response = "You don't seem to be carrying \"" + objectName + "\"";
+			}
+			else response = verb + " what?";
+		}
+		else if (['put', 'place'].includes(verb)) {
+			if (objectName !== '') {
+				// Find the index of the item to drop
+				let itemToPlaceIndex = socket.data.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+				// TODO: make it so you can 'place' items from the room and not just from your inventory, and also be able to put items from inventory/room into items that are in your inventory such as putting something into a bottle.
+				let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
+				if (itemToPlaceIndex != -1) {
+					if (container) {
+						if (container.inventory) {
+							// Remove the item from the player's inventory
+							let placedItem = socket.data.inventory.splice(itemToPlaceIndex, 1)[0];
+							// Push the item to the container
+							container.inventory.push(placedItem);
+							response = "You put the " + placedItem.name + " in the " + container.name;
+							for (user of await getSocketsInGameRoom(gameRoom)) {
+								socket.to(user.id).emit('event', socket.data.name + " just put " + placedItem.name + ' in the ' + container.name, 'user');
+							}
+						} else response = secondaryObjectName + " doesn't seem to be a container";
+					} else response = "There doesn't seem to be a " + secondaryObjectName + " here.";
 				} else response = "You don't seem to be carrying that.";
 			}
 			else response = verb + " what?";
 		}
 		else if (['use'].includes(verb)) {
 			// TODO(?): rename these variables to all use item instead of "object"
-			let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
 			let itemToUse = socket.data.inventory.find(item => item.name === objectName || item.altNames?.includes(objectName));
 			if (!itemToUse) // if it doesn't exist in the inventory, look for it in the room.
 				itemToUse = gameRoom.interactables.find(item => item.name === objectName || item.altNames?.includes(objectName));
@@ -518,13 +1066,12 @@ io.on("connection", function(socket) {
 					// TODO: the useAction variable will indicate what kind of thing
 					// will happen if the item is used on its own without a secondary object.
 				} else {
-					let secondaryObjectName = getObjectNameFromIndices(words, secondaryObjectStartIndex, words.length - 1);
 					// TODO: search for duplicates that could occur both in the room and the player's inventory. Right now we're just using the first match we get.
 					let secondaryItem = socket.data.inventory.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
 					if (!secondaryItem) // if it doesn't exist in the inventory, look for it in the room.
 						secondaryItem = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
 					if (secondaryItem) {
-						let events = secondaryItem.actions.find(action => action.commands.includes(verb))?.events;
+						let events = secondaryItem.actions?.find(action => action.commands.includes(verb))?.events;
 						let eventResponses = [];
 						if (events) {
 							for (eventObject of events) {
@@ -552,11 +1099,9 @@ io.on("connection", function(socket) {
 			// TODO: make the players only able to talk to the players in the same game world room?
 		}
 		else if (verb !== '') {
-			let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
 			let primaryItem = socket.data.inventory.find(item => item.name === objectName || item.altNames?.includes(objectName));
 			if (!primaryItem) // if it doesn't exist in the inventory, look for it in the room.
 				primaryItem = gameRoom.interactables.find(item => item.name === objectName || item.altNames?.includes(objectName));
-			let secondaryObjectName = getObjectNameFromIndices(words, secondaryObjectStartIndex, words.length - 1);
 			let secondaryItem = socket.data.inventory.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
 			if (!secondaryItem) // if it doesn't exist in the inventory, look for it in the room.
 				secondaryItem = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
