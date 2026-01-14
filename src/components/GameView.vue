@@ -36,14 +36,20 @@ export default {
 			this.inputText = "";
 		},
 		joinLobby() {
-			socket.emit("joinLobby", this.requestedLobbyName, this.requestedUsername, (success, message) => {
-				if (success) {
-					this.username = this.requestedUsername;
-					// this.chatHistory = previousChatMessages;
-					console.log("Joined lobby successfully!");
-				} else {
+			const savedToken = localStorage.getItem(`mud_token:${this.requestedUsername}`);
+
+			socket.emit("joinLobby", this.requestedLobbyName, this.requestedUsername, savedToken, (success, message, payload) => {
+				console.log("token:", savedToken);
+
+				if (!success) {
 					alert("Failed to join lobby: " + message);
-				}
+					return;
+				} 
+				this.username = this.requestedUsername;
+				localStorage.setItem("mud_last_username", this.username);
+				if (payload?.token) localStorage.setItem(`mud_token:${this.username}`, payload.token);
+				// this.chatHistory = previousChatMessages;
+				console.log("Joined lobby successfully!");
 			});
 		},
 		handleIntro(){
@@ -68,6 +74,15 @@ export default {
 		}
 	},
 	mounted() {
+		socket.on("connect", () => {
+			const username = localStorage.getItem("mud_last_username");
+			const token = localStorage.getItem(`mud_token:${username}`);
+			if (!username || !token) return;
+
+			socket.emit("reconnectUser", username, token, (ok, msg) => {
+
+			});
+		});
 		socket.on("messageSent", (chatMessage) => {
 			this.addChatHistory(chatMessage, 'message');
 		});

@@ -931,15 +931,20 @@ function randomFromList(list) {
 
 //-------User Collection-----------
 // create new user
-async function createUser(username, lobbyName, socketId) {
-	return db.collection("users").insertOne({
+const crypto = require("crypto");
+async function createUser({username, lobbyName, socketId}) {
+	const reconnectToken = crypto.randomBytes(32).toString("hex");
+	await db.collection("users").insertOne({
 			username,
 			lobbyName,
 			currentWorldRoomName: INITIAL_WORLD_START_ROOM,
 			inventory: [],
 			socketId,
-			createdAt: new Date()
+			reconnectToken,
+			createdAt: new Date(),
+			tokenUpdatedAt: new Date()
 	});
+	return reconnectToken;
 }
 
 //load existing user
@@ -948,20 +953,21 @@ async function getUserFromDB(username) {
 }
 
 //update user fields
-async function updateUser(username, fields){
+async function updateUser(username, updateDoc, options = {}){
 	return db.collection("users").updateOne(
 		{username},
-		{$set: fields}
+		updateDoc,
+		options
 	);
 }
 
 
 
 //------------Lobbies Collection------------
-async function createLobby(lobbyName, username) {
+async function createLobby({lobbyName, createdBy}) {
 	return db.collection("lobbies").insertOne({
 		lobbyName,
-		users: [username],
+		users: createdBy ? [createdBy] : [],
 		gameRooms: structuredClone(INITIAL_WORLD_DATA),
 		createdAt: new Date()
 	});
@@ -1027,9 +1033,15 @@ io.on("connection", async function(socket) {
 
 	// console.log("Somebody connected.");
 	
-	socket.on("reconnectUser", async (username, callback)=>{
+	socket.on("reconnectUser", async (username, token, callback)=>{
 		const user = await getUserFromDB(username);
 		if(!user) return callback(false, "User not found.");
+
+		if (user.reconnectToken !== token) {
+			return callback(false, "Unauthorized.");
+		}
+
+		await updateUser(username, {$set: {socketId: socket.id}});
 
 		socket.data.name = user.username;
 		socket.data.lobbyName = user.lobbyName;
@@ -1062,7 +1074,6 @@ io.on("connection", async function(socket) {
 		// Remove this user from the lobby
 		lobby.users = lobby.users.filter(s => s.id !== socket.id);
 
-
 		socket.leave(lobbyName);
 		console.log(socket.data.name + " left " + lobbyName);
 		io.to(socket.data.lobbyName).emit("userLeftLobby", socket.data.name);
@@ -1078,8 +1089,6 @@ io.on("connection", async function(socket) {
 			await emitUserList(lobbyName);
 
 		}
-
-
 		// TODO (optional): If the lobby is empty, delete the lobby
 
 		socket.data.lobbyName = null;
@@ -1119,33 +1128,9 @@ io.on("connection", async function(socket) {
 		return objectName;
 	}
 
-	// async function getUserFromDB(username) {
-	// 	return db.collection("users").findOne({username});
-	// }
-
-	// async function getLobbyFromDB(lobbyName) {
-	// 	return db.collection("lobbies").findOne({lobbyName});
-	// }
-
-	// async function updateUserRoom(username, roomName) {
-	// 	return db.collection("users").updateOne(
-	// 		{username},
-	// 		{$set: {currentWorldRoomName: roomName}}
-	// 	);
-	// }
-
 	async function getCurrentGameRoom(lobby, roomName) {
 		return lobby.gameRooms.find(r=>r.name===roomName);
 	}
-
-	// async function saveLobbyGameRooms(lobbyName, gameRooms) {
-	// 	return db.collection("lobbies").updateOne(
-	// 		{lobbyName},
-	// 		{$set: {gameRooms}}
-	// 	);
-	// }
-
-
 
 
 	async function parseCommand(command) {
@@ -1250,12 +1235,12 @@ io.on("connection", async function(socket) {
 			index += 1;
 		}
 
-
-		let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
-		let secondaryObjectName = getObjectNameFromIndices(words, secondaryObjectStartIndex, words.length - 1);
-		let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
-		let gameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
-		let response = '';
+		//alpha server 1
+		// let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
+		// let secondaryObjectName = getObjectNameFromIndices(words, secondaryObjectStartIndex, words.length - 1);
+		// let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
+		// let gameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
+		// let response = '';
 		// console.log(objectName + " " + preposition + " ", secondaryObjectName);
 		if (['l', 'look'].includes(verb)) {
 			response = getRoomDescription(gameRoom);
@@ -1296,9 +1281,6 @@ io.on("connection", async function(socket) {
 			const gameRoom = freshLobby.gameRooms.find(r => r.name === freshUser.currentWorldRoomName);
 			if (!gameRoom) return "Room not found.";
 
-
-
-
 			// 4. Now get the correct exit
 			let exit = gameRoom.exits.find(ex => ex.direction === verb);
 			if (!exit) return "There is no exit in that direction.";
@@ -1309,18 +1291,12 @@ io.on("connection", async function(socket) {
 			if (!destinationRoom) return "Destination room not found.";
 
 			// 5. Update user position in DB
-			//2번 수정
-			// await db.collection("users").updateOne(
-			// 	{ username },
-			// 	{ $set: }
-			// );
-			await updateUser(username, { currentWorldRoomName: exit.destination });
+			await updateUser(username, { $set: {currentWorldRoomName: exit.destination}});
 
 // 			await db.collection("lobbies").updateOne(
 // 			{ lobbyName: freshLobby.lobbyName },   
 // 			{ $set: { gameRooms: freshLobby.gameRooms } }
 // );
-
 
 			socket.data.currentWorldRoomName = exit.destination;
 
@@ -1335,8 +1311,6 @@ io.on("connection", async function(socket) {
 
 			// io.to(freshUser.lobbyName).emit("updateUserList", userList);
 			await emitUserList(freshUser.lobbyName);
-
-
 
 			return getRoomDescription(destinationRoom);
 		}
@@ -1355,13 +1329,7 @@ io.on("connection", async function(socket) {
 						// Push the item to the player's inventory
 						socket.data.inventory.push(takenItem);
 
-						// await db.collection("users").updateOne(
-						// 	{username: socket.data.name},
-						// 	{$set: {inventory: socket.data.inventory}}
-						// );
-						await updateUser(username, {inventory: socket.data.inventory});
-
-
+						await updateUser(username, {$set:{inventory: socket.data.inventory}});
 
 						response = "You took the " + takenItem.name;
 						// Remove the positionalPhrase from the item
@@ -1371,54 +1339,51 @@ io.on("connection", async function(socket) {
 						// }
 						io.to(freshLobby.lobbyName).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
 						
-						// await db.collection("lobbies").updateOne(
-						// 	{lobbyName: freshLobby.lobbyName},
-						// 	{$set: {gameRooms: freshLobby.gameRooms}}
-						// );
 						await updateLobby(freshLobby.lobbyName, { $set:{gameRooms: freshLobby.gameRooms}});
 					} else response = "You can't take that!";
 				} else response = "There doesn't seem to be one of those here.";
-				if (preposition !== '') {
-					let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
-					if (container) {
-						let itemToTakeIndex = container?.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
-						if (itemToTakeIndex != -1) {
-							if (container.inventory[itemToTakeIndex].canGet) {
-								// Remove the item from the gameRoom
-								let takenItem = container.inventory.splice(itemToTakeIndex, 1)[0];
-								// Push the item to the player's inventory
-								socket.data.inventory.push(takenItem);
-								response = "You took the " + takenItem.name;
-								// Remove the positionalPhrase from the item
-								takenItem.positionalPhrase = ''
-								if (takenItem.name == 'Alien Heart') {
-									io.to(socket.data.lobbyName).emit('event', socket.data.name + " has discovered the " + takenItem.name + ". They have won the game!", 'user');
-								}
-								for (user of await getSocketsInGameRoom(gameRoom)) {
-									socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
-								}
-							} else response = "You can't take the " + objectName + "!";
-						} else response = "The " + secondaryObjectName + " doesn't contain \"" + objectName + "\".";
-					} else
-						response = "From what?";
-				}
-				else {
-					let itemToTakeIndex = gameRoom.interactables.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
-					if (itemToTakeIndex != -1) {
-						if (gameRoom.interactables[itemToTakeIndex].canGet) {
-							// Remove the item from the gameRoom
-							let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
-							// Push the item to the player's inventory
-							socket.data.inventory.push(takenItem);
-							response = "You took the " + takenItem.name;
-							// Remove the positionalPhrase from the item
-							takenItem.positionalPhrase = '';
-							for (user of await getSocketsInGameRoom(gameRoom)) {
-								socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
-							}
-						} else response = "You can't take the " + objectName + "!";
-					} else response = "There doesn't seem to be \"" + objectName + "\" here.";
-				}
+				//alpha server n.2
+				// if (preposition !== '') {
+				// 	let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
+				// 	if (container) {
+				// 		let itemToTakeIndex = container?.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+				// 		if (itemToTakeIndex != -1) {
+				// 			if (container.inventory[itemToTakeIndex].canGet) {
+				// 				// Remove the item from the gameRoom
+				// 				let takenItem = container.inventory.splice(itemToTakeIndex, 1)[0];
+				// 				// Push the item to the player's inventory
+				// 				socket.data.inventory.push(takenItem);
+				// 				response = "You took the " + takenItem.name;
+				// 				// Remove the positionalPhrase from the item
+				// 				takenItem.positionalPhrase = ''
+				// 				if (takenItem.name == 'Alien Heart') {
+				// 					io.to(socket.data.lobbyName).emit('event', socket.data.name + " has discovered the " + takenItem.name + ". They have won the game!", 'user');
+				// 				}
+				// 				for (user of await getSocketsInGameRoom(gameRoom)) {
+				// 					socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+				// 				}
+				// 			} else response = "You can't take the " + objectName + "!";
+				// 		} else response = "The " + secondaryObjectName + " doesn't contain \"" + objectName + "\".";
+				// 	} else
+				// 		response = "From what?";
+				// }
+				// else {
+				// 	let itemToTakeIndex = gameRoom.interactables.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+				// 	if (itemToTakeIndex != -1) {
+				// 		if (gameRoom.interactables[itemToTakeIndex].canGet) {
+				// 			// Remove the item from the gameRoom
+				// 			let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
+				// 			// Push the item to the player's inventory
+				// 			socket.data.inventory.push(takenItem);
+				// 			response = "You took the " + takenItem.name;
+				// 			// Remove the positionalPhrase from the item
+				// 			takenItem.positionalPhrase = '';
+				// 			for (user of await getSocketsInGameRoom(gameRoom)) {
+				// 				socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+				// 			}
+				// 		} else response = "You can't take the " + objectName + "!";
+				// 	} else response = "There doesn't seem to be \"" + objectName + "\" here.";
+				// }
 			}
 			else response = verb + " what?";
 		}
@@ -1432,44 +1397,38 @@ io.on("connection", async function(socket) {
 					// Push the item to the gameRoom
 					gameRoom.interactables.push(droppedItem);
 
-					// await db.collection("users").updateOne(
-					// 	{username: socket.data.name},
-					// 	{$set: {inventory: socket.data.inventory}}
-					// );
-					await updateUser(username, {inventory: socket.data.inventory});
+					await updateUser(username, {$set: {inventory: socket.data.inventory}});
 					response = "You dropped the " + droppedItem.name + " on the ground.";
 					droppedItem.positionalPhrase = " on the ground."
 					for (user of await getSocketsInGameRoom(gameRoom)) {
 						socket.to(user.id).emit('event', socket.data.name + " just dropped " + droppedItem.name, 'user');
 					}
-					// await db.collection("lobbies").updateOne(
-					// 	{lobbyName},
-					// 	{$set: {gameRooms: freshLobby.gameRooms}}
-					// );
+
 					await updateLobby(lobbyName, { $set:{gameRooms: freshLobby.gameRooms}});
-				} else response = "You don't seem to be carrying \"" + objectName + "\"";
-			}
-			else response = verb + " what?";
-		}
-		else if (['put', 'place'].includes(verb)) {
-			if (objectName !== '') {
-				// Find the index of the item to drop
-				let itemToPlaceIndex = socket.data.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
-				// TODO: make it so you can 'place' items from the room and not just from your inventory, and also be able to put items from inventory/room into items that are in your inventory such as putting something into a bottle.
-				let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
-				if (itemToPlaceIndex != -1) {
-					if (container) {
-						if (container.inventory) {
-							// Remove the item from the player's inventory
-							let placedItem = socket.data.inventory.splice(itemToPlaceIndex, 1)[0];
-							// Push the item to the container
-							container.inventory.push(placedItem);
-							response = "You put the " + placedItem.name + " in the " + container.name;
-							for (user of await getSocketsInGameRoom(gameRoom)) {
-								socket.to(user.id).emit('event', socket.data.name + " just put " + placedItem.name + ' in the ' + container.name, 'user');
-							}
-						} else response = secondaryObjectName + " doesn't seem to be a container";
-					} else response = "There doesn't seem to be a " + secondaryObjectName + " here.";
+					//alpha server n.3
+		// 		} else response = "You don't seem to be carrying \"" + objectName + "\"";
+		// 	}
+		// 	else response = verb + " what?";
+		// }
+		// else if (['put', 'place'].includes(verb)) {
+		// 	if (objectName !== '') {
+		// 		// Find the index of the item to drop
+		// 		let itemToPlaceIndex = socket.data.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+		// 		// TODO: make it so you can 'place' items from the room and not just from your inventory, and also be able to put items from inventory/room into items that are in your inventory such as putting something into a bottle.
+		// 		let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
+		// 		if (itemToPlaceIndex != -1) {
+		// 			if (container) {
+		// 				if (container.inventory) {
+		// 					// Remove the item from the player's inventory
+		// 					let placedItem = socket.data.inventory.splice(itemToPlaceIndex, 1)[0];
+		// 					// Push the item to the container
+		// 					container.inventory.push(placedItem);
+		// 					response = "You put the " + placedItem.name + " in the " + container.name;
+		// 					for (user of await getSocketsInGameRoom(gameRoom)) {
+		// 						socket.to(user.id).emit('event', socket.data.name + " just put " + placedItem.name + ' in the ' + container.name, 'user');
+		// 					}
+		// 				} else response = secondaryObjectName + " doesn't seem to be a container";
+		// 			} else response = "There doesn't seem to be a " + secondaryObjectName + " here.";
 				} else response = "You don't seem to be carrying that.";
 			}
 			else response = verb + " what?";
@@ -1564,15 +1523,6 @@ io.on("connection", async function(socket) {
 		if (response != '')
 			socket.emit('commandResponse', response);
 
-		// let responseObj = {
-		// 	lobby: socket.data.lobbyName,
-		// 	user: socket.data.name,
-		// 	command: command,
-		// 	response: response,
-		// 	time: new Date()
-		// };
-
-		// await db.collection("commandsAndResponses").insertOne(responseObj);
 		await logCommand(socket.data.lobbyName, username, command, response);
 	}
 
@@ -1596,17 +1546,9 @@ io.on("connection", async function(socket) {
 
 		if (!lobbyName || !username) return;
 
-		// await db.collection("lobbies").updateOne(
-		// 	{lobbyName},
-		// 	{$pull: {users: username}}
-		// );
 		await updateLobby(lobbyName, { $pull: { users: username } });
 
-		// await db.collection("users").updateOne(
-		// 	{username},
-		// 	{$set: {socketId: null}}
-		// );
-		await updateUser(username, {socketId: null});
+		await updateUser(username, {$set:{socketId: null}});
 
 		await db.collection("roomStates").updateMany(
 			{lobbyName},
@@ -1633,71 +1575,47 @@ io.on("connection", async function(socket) {
 	});
 
 
-	socket.on("joinLobby", async function (lobbyName, username, callback) {
-		for (const [id,s] of io.sockets.sockets){
-			if (s.data?.name === username && s.id !== socket.id){
-				return callback(false, "User already logged in.");
-			}
-		}
+	socket.on("joinLobby", async function (lobbyName, username, token, callback) {
+		let user = await db.collection("users").findOne({ username });
+		let lobby = await db.collection("lobbies").findOne({ lobbyName });
 		
-		socket.data.name = username;
-		socket.data.lobbyName = lobbyName;
-
-		let existingUser = await db.collection("users").findOne({ username });
-		if (!existingUser) {
-			await createUser(username, lobbyName, socket.id);
-
+		if (!user) {
+			token = await createUser({username, lobbyName, socketId: socket.id});
 			socket.data.currentWorldRoomName = INITIAL_WORLD_START_ROOM;
 			socket.data.inventory = [];
 		}else{
-			// await db.collection("users").updateOne(
-			// 	{username},
-			// 	{$set: {
-			// 		lobbyName,
-			// 		socketId: socket.id
-			// 	}}
-			// );
-			await updateUser(username, {
-					lobbyName,
-					socketId: socket.id
-				});
-			
-			socket.data.currentWorldRoomName =
-				existingUser.currentWorldRoomName || INITIAL_WORLD_START_ROOM;
-			socket.data.inventory = existingUser.inventory || [];
+			if (user.reconnectToken !== token) {
+				return callback(false, "Unauthorized.");
+			}
+			if (user?.socketId){
+				const oldSocket = io.sockets.sockets.get(user.socketId);
+				if (oldSocket && oldSocket.connected && oldSocket.id !== socket.id){
+					return callback(false, "User already logged in.");
+				}
+			}
+			token = user.reconnectToken;
+			await updateUser(username, {$set:{lobbyName, socketId: socket.id}});
+
+			socket.data.currentWorldRoomName = user.currentWorldRoomName || INITIAL_WORLD_START_ROOM;
+			socket.data.inventory = user.inventory || [];
 		}
 
-		let existingLobby = await db.collection("lobbies").findOne({ lobbyName });
-		if (!existingLobby) {
-			// await db.collection("lobbies").insertOne({
-			// 	lobbyName,
-			// 	users: [username],
-			// 	createdAt: new Date(),
-			// 	gameRooms: structuredClone(INITIAL_WORLD_DATA)
-			// });
-			await createLobby(lobbyName, username);
+		socket.data.name = username;
+		socket.data.lobbyName = lobbyName;
+
+		if (!lobby) {
+			await createLobby({lobbyName, createdBy: username});
 		}else{
-			if(!existingLobby.users.includes(username)){
-				// await db.collection("lobbies").updateOne(
-				// 	{lobbyName},
-				// 	{$addToSet:{users:username}}
-				// );
+			if(!lobby.users.includes(username)){
 				await updateLobby(lobbyName, { $addToSet: { users: username } });
 			}
 		}
 
-		
 		socket.join(lobbyName);
 		io.to(lobbyName).emit("userJoinedLobby", username);
-		let updatedLobby = await db.collection("lobbies")
-		 	.findOne({lobbyName});
-		
-		// io.to(lobbyName).emit("updateUserList", updatedLobby.users);
 		await emitUserList(lobbyName);
 
-
-
-		callback(true, "logged in");
+		callback(true, "logged in", {token});
 	});
 
 
@@ -1714,50 +1632,22 @@ io.on("connection", async function(socket) {
 
 		socket.data.roomName = roomName; //TODO: Be wary of ANY data coming from the client.
 		
-
-		// await db.collection("users").updateOne(
-		// 	{username},
-		// 	{
-		// 		$set:{
-		// 			currentWorldRoomName: roomName,
-		// 			lobbyName: lobbyName,
-		// 			updatedAt: new Date()
-		// 		}
-		// 	}
-		// );
-		await updateUser(username, {
+		await updateUser(username, {$set:{
 				currentWorldRoomName: roomName,
 				lobbyName: lobbyName,
 				updatedAt: new Date()
-			});
+			}});
 
-
-		// await db.collection("roomStates").updateOne(
-		// 	{ lobbyName, roomName },
-		// 	{
-		// 		$addToSet: { players: username},
-		// 		$set: {updatedAt: new Date()}
-		// 	},
-		// 	{ upsert: true }
-		// );
 		await saveRoomState(lobbyName, roomName, {
 			$addToSet: { players: username },
 			$set: { updatedAt: new Date() }
 		});
 
-
-		// await db.collection("lobbies").updateOne(
-		// 	{lobbyName},
-		// 	{$addToSet: {users: username}}
-		// );
 		await updateLobby(lobbyName, { $addToSet: { users: username } });
 
 		const updatedLobby = await db.collection("lobbies")
 			.findOne({lobbyName});
 
-
-		
-		// io.to(lobbyName).emit("updateUserList", updatedLobby.users);
 		await emitUserList(lobbyName);
 
 		// the "callback" below calls the method that the client side gave
@@ -1831,8 +1721,7 @@ io.on("connection", async function(socket) {
 	
 		if (callback) callback(true, response||"");
 	});
-
-
+	
 
 	//retrieve stored chat history for this room
 	// socket.on("showChatHistory", async function(callback){
@@ -1865,9 +1754,6 @@ io.on("connection", async function(socket) {
 
 		if (callback) callback(true, history);
 	});
-
-
-
 
 
 	// List players in the current lobby
