@@ -69,31 +69,6 @@ async function setExitLockState(socket, eventObject, actingItem, itemToBeUnlocke
     let currentRoom = lobby.gameRooms.find(r => r.name === roomName);
     if (!currentRoom) return "Room not found.";
 
-    // Current → Target exit
-    // let forwardExit = currentRoom.exits?.find(e => e.destination === eventObject.target);
-    // if (!forwardExit)
-    //     return "No exit leading there.";
-
-    // Find target room
-    // let targetRoom = lobby.gameRooms.find(r => r.name === eventObject.target);
-    // if (!targetRoom)
-    //     return "Destination room not found.";
-
-    // Target → Current exit (reverse direction)
-    // let reverseExit = targetRoom.exits?.find(e => e.destination === currentRoom.name);
-
-    // Key mismatch?
-    // if (itemToBeActedOn?.neededKeyId !== actingItem?.keyId)
-    //     return "You can't unlock that with this item.";
-
-    // Apply lock state
-    // forwardExit.isLocked = locked;
-    // if (reverseExit)
-    //     reverseExit.isLocked = locked;
-
-
-	// console.log("BEFORE SAVE:", JSON.stringify(currentRoom.exits, null, 2));
-
 
 	let exit = currentRoom.exits?.find(exit => exit.destination === eventObject.target);
 	let destinationRoom = lobby.gameRooms.find(r => r.name === eventObject.target);
@@ -128,9 +103,6 @@ async function setExitLockState(socket, eventObject, actingItem, itemToBeUnlocke
     );
 
 	return response;
-
-
-    // return `The door is now ${locked ? "locked" : "unlocked"}.`;
 }
 
 
@@ -780,15 +752,6 @@ function randomFromList(list) {
 	return list[i];
 }
 
-// function mapSocketsToUsernames(socketList) {
-// 	let ret = [];
-// 	for(socketKeyValue of socketList) {
-// 		// console.log(socketKeyValue[1]);
-// 		ret.push(socketKeyValue[1].data.name);
-// 	}
-// 	return ret;
-// }
-
 //-------User Collection-----------
 // create new user
 async function createUser(username, lobbyName, socketId) {
@@ -827,20 +790,11 @@ async function createLobby(lobbyName, username) {
 	});
 }
 
-// async function getLobby(lobbyName) {
-// 	return db.collection("lobbies").findOne({lobbyName});
-// }
 
 async function getLobbyFromDB(lobbyName) {
 	return db.collection("lobbies").findOne({lobbyName});
 }
 
-// async function updateLobby(lobbyName, fields) {
-// 	return db.collection("lobbies").updateOne(
-// 		{lobbyName},
-// 		{$set: fields}
-// 	);
-// }
 async function updateLobby(lobbyName, updateDoc, options = {}) {
   return db.collection("lobbies").updateOne(
     { lobbyName },
@@ -852,13 +806,6 @@ async function updateLobby(lobbyName, updateDoc, options = {}) {
 
 
 //-----------Room States-------------
-// async function saveRoomState(lobbyName, roomName, data) {
-// 	return db.collection("roomStates").updateOne(
-// 		{lobbyName, roomName},
-// 		{$set: data},
-// 		{upsert: true}
-// 	);
-// }
 
 async function saveRoomState(lobbyName, roomName, updateDoc, options = {}) {
   return db.collection("roomStates").updateOne(
