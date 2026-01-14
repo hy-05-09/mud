@@ -128,3 +128,6 @@ export default {
 	</div>
 	<!-- <p class="clickable" @click="directMessage(index)" v-for="(user, index) of userList">{{user}}<br></p> -->
 </template>
+
+
+

@@ -11,3 +11,141 @@
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
+
+<!--Test Code-->
+
+<!-- <!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>MUD Test Page</title>
+  </head>
+
+  <body>
+    <h1>MUD Server Test</h1>
+
+    <div>
+      <input id="username" placeholder="Enter username" />
+      <input id="lobby" placeholder="Enter lobby name" />
+      <button onclick="joinLobby()">Join Lobby</button>
+    </div>
+
+    <div>
+      <input id="roomName" placeholder="Room name" />
+      <button onclick="joinRoom()">Join Room</button>
+    </div>
+
+
+    <div>
+      <input id="command" placeholder="Type a command (look, get key...)" />
+      <button onclick="sendCommand()">Send Command</button>
+    </div>
+
+    <hr />
+
+    <h2>DB Test Tools</h2>
+
+    <div>
+      <button onclick="testUser()">Check User in DB</button>
+      <button onclick="testLobby()">Check Lobby in DB</button>
+    </div>
+
+    <div>
+      <input id="room" placeholder="Room name" />
+      <button onclick="testRoomState()">Show RoomState</button>
+    </div>
+
+    <div>
+      <button onclick="testCommands()">Show Command Logs</button>
+    </div>
+
+    <hr />
+    <pre id="output"></pre>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
+
+      function log(msg) {
+        document.getElementById("output").textContent += msg + "\n";
+      }
+
+      socket.on("connect", () => log("Connected to server!"));
+      socket.on("event", (msg) => log("EVENT: " + msg));
+      socket.on("commandResponse", (msg) => log("RESPONSE: " + msg));
+      socket.on("messageSent", (msg) => log("MESSAGE: " + msg));
+
+      /* ---------------------
+             JOIN LOBBY
+      ----------------------*/
+      function joinLobby() {
+        const username = document.getElementById("username").value;
+        const lobby = document.getElementById("lobby").value;
+
+        socket.emit("joinLobby", lobby, username, (ok, message) => {
+          log("JoinLobby → " + message);
+        });
+      }
+
+      function joinRoom() {
+        const room = document.getElementById("roomName").value;
+        socket.emit("joinRoom", room, (ok, msg) => {
+          log("JoinRoom → " + msg);
+        });
+      }
+
+
+      /* ---------------------
+               COMMAND
+      ----------------------*/
+      function sendCommand() {
+        const cmd = document.getElementById("command").value;
+        socket.emit("sendCommand", cmd, (ok, msg) => {
+          if (!ok) log("Command error: " + msg);
+        });
+      }
+
+      /* ---------------------
+          DB TESTING BELOW
+      ----------------------*/
+
+      // 1. Check User Exists
+      function testUser() {
+        const username = document.getElementById("username").value;
+        socket.emit("dbTest:getUser", username, (ok, data) => {
+          if (ok) log("USER FOUND:\n" + JSON.stringify(data, null, 2));
+          else log("USER NOT FOUND");
+        });
+      }
+
+      // 2. Check Lobby Exists
+      function testLobby() {
+        const lobby = document.getElementById("lobby").value;
+        socket.emit("dbTest:getLobby", lobby, (ok, data) => {
+          if (ok) log("LOBBY FOUND:\n" + JSON.stringify(data, null, 2));
+          else log("LOBBY NOT FOUND");
+        });
+      }
+
+      // 3. Show Room State
+      function testRoomState() {
+        const lobby = document.getElementById("lobby").value;
+        const room = document.getElementById("room").value;
+
+        socket.emit("dbTest:getRoomState", lobby, room, (ok, data) => {
+          if (ok) log("ROOM STATE:\n" + JSON.stringify(data, null, 2));
+          else log("NO ROOM STATE");
+        });
+      }
+
+      // 4. Show Command Logs
+      function testCommands() {
+        const lobby = document.getElementById("lobby").value;
+        socket.emit("dbTest:getCommands", lobby, (ok, data) => {
+          if (ok) log("COMMAND LOGS:\n" + JSON.stringify(data, null, 2));
+          else log("NO COMMAND LOGS");
+        });
+      }
+    </script>
+  </body>
+</html>  -->

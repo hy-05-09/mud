@@ -30,6 +30,7 @@ app.use(express.static("pub"));
 //On the server side, you also need to do:
 //	npm install express
 //	npm install socket.io
+//	npm install mongoose
 
 let messages = []; //a full list of all chat made on this server
 let lobbyMessages = {}; // a list of chats made on specific room
@@ -42,7 +43,7 @@ let verbs = ['l', 'look','search', 'inspect', 'examine', 'north', 'n', 'south', 
 	'w', 'up', 'u', 'down', 'd', 'get', 'grab', 'take', 'drop', 'use', 'attack', 'hit',
 	'read', 'eat', 'drink', 'throw', 'jump', 'sit', 'whisper', 'say', 'yell', 'talk',
 	'speak', 'open', 'close', 'put', 'place', 'set', 'unlock', 'lock', 'turn',
-	'help', 'h', 'inventory', 'i', 'inv',]; // Make sure to handle "look at"
+	'help', 'h', 'inventory', 'i', 'inv',]; // Make sure to handle "look at"	
 
 let prepositions = ['with', 'at', 'on', 'in', 'to', 'from', 'out'];
 
@@ -55,12 +56,23 @@ const MAX_USERS_PER_LOBBY = 4;
 
 const INITIAL_WORLD_START_ROOM = 'Forest';
 
-function setExitLockState(socket, eventObject, actingItem, itemToBeUnlocked, locked = false) {
-	let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
-	let currentGameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
-	let exit = currentGameRoom.exits?.find(exit => exit.destination === eventObject.target);
-	let destinationRoom = currentLobby.gameRooms.find(r => r.name === eventObject.target);
-	let destinationExit = destinationRoom?.exits?.find(exit => exit.destination === currentGameRoom.name);
+
+async function setExitLockState(socket, eventObject, actingItem, itemToBeUnlocked, locked = false) {
+
+	const lobbyName = socket.data.lobbyName;
+    const roomName = socket.data.currentWorldRoomName;
+
+    // Load full lobby fresh from DB
+    const lobby = await db.collection("lobbies").findOne({ lobbyName });
+    if (!lobby) return "Lobby not found.";
+
+    let currentRoom = lobby.gameRooms.find(r => r.name === roomName);
+    if (!currentRoom) return "Room not found.";
+
+
+	let exit = currentRoom.exits?.find(exit => exit.destination === eventObject.target);
+	let destinationRoom = lobby.gameRooms.find(r => r.name === eventObject.target);
+	let destinationExit = destinationRoom?.exits?.find(exit => exit.destination === currentRoom.name);
 	let response = '';
 	let success = () => {
 		exit.isLocked = locked;
@@ -82,8 +94,18 @@ function setExitLockState(socket, eventObject, actingItem, itemToBeUnlocked, loc
 	}
 	if (destinationExit?.isLocked !== undefined)
 		destinationExit.isLocked = locked;
+	
+
+    // Save FULL updated rooms back into DB
+    await db.collection("lobbies").updateOne(
+        { lobbyName },
+        { $set: { gameRooms: lobby.gameRooms } }
+    );
+
 	return response;
 }
+
+
 
 const interactableFunctions = {
 	// These functions are meant to correspond to the action event names that game-item-objects can refer to.
@@ -101,15 +123,26 @@ const interactableFunctions = {
 	lockExit: (socket, eventObject, actingItem, itemToBeActedOn) => {
 		return setExitLockState(socket, eventObject, actingItem, itemToBeActedOn, true);
 	},
-	toggleLockExit: (socket, eventObject, actingItem, itemToBeActedOn) => {
-		let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
-		let currentGameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
-		let exit = currentGameRoom.exits?.find(exit => exit.destination === eventObject.target);
-		let locked = false;
-		if (exit?.isLocked !== undefined)
-			locked = !exit.isLocked;
-		return setExitLockState(socket, eventObject, actingItem, itemToBeActedOn, locked);
+
+	toggleLockExit: async (socket, eventObject, actingItem, itemToBeActedOn) => {
+		const lobbyName = socket.data.lobbyName;
+		const roomName = socket.data.currentWorldRoomName;
+
+		const lobby = await db.collection("lobbies").findOne({ lobbyName });
+		if (!lobby) return "Lobby not found.";
+
+		const currentRoom = lobby.gameRooms.find(r => r.name === roomName);
+		if (!currentRoom) return "Room not found.";
+
+		const forwardExit = currentRoom.exits?.find(e => e.destination === eventObject.target);
+		if (!forwardExit) return "No exit leading there.";
+
+		const nextLocked = !Boolean(forwardExit.isLocked);
+
+		return setExitLockState(socket, eventObject, actingItem, itemToBeActedOn, nextLocked);
 	}
+
+
 };
 
 // This is the initial game data that each server-room starts with:
@@ -535,6 +568,183 @@ const INITIAL_WORLD_DATA = [
 				destination: 'Research Facility',
 				direction: 'south',
 				isLocked: true,
+				neededKeyId: 'front-door-key'
+			},
+			{
+				destination: 'Garden',
+				direction: 'north'
+			}
+		],
+		interactables: [
+			{
+				name: 'Front Door',
+				altNames: ['front door'],
+				description: "It's a wooden front door with a brass doorknob.",
+				neededKeyId: 'front-door-key',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Living Room'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Living Room'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Living Room'
+						}]
+					}
+				]
+			}
+		]
+	},
+	{
+		name: 'Living Room',
+		description: 'You are in a abandoned living room. There is a door to the west leading to the front porch. There\'s rooms to the north and south.',
+		exits: [
+			{
+				destination: 'Front Porch',
+				direction: 'west',
+				isLocked: true,
+				neededKeyId: 'front-door-key'
+			},
+			{
+				destination: 'Kitchen',
+				direction: 'south'
+			},
+			{
+				destination: 'Bedroom',
+				direction: 'north'
+			}
+		],
+		interactables: [
+			{
+				name: 'couch',
+				description: 'A dusty old couch with torn upholstery.',
+				positionalPhrase: ' in the middle of the room.',
+				canGet: false,
+				listOnLook: true,
+				inventory: []
+			},
+			{
+				name: 'Front Door',
+				altNames: ['front door'],
+				description: "It's a wooden front door with a brass doorknob.",
+				neededKeyId: 'front-door-key',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Front Porch'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Front Porch'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Front Porch'
+						}]
+					}
+				]
+			}
+
+		]
+	},
+	{
+		name: 'Bedroom',
+		description: 'You are in a small bedroom. There is a bathroom to the east and the living room to the south.',
+		exits: [
+			{
+				destination: 'Living Room',
+				direction: 'south'
+			},
+			{
+				destination: 'Bathroom',
+				direction: 'east',
+				isLocked: true,
+			}
+		],
+		interactables: [
+			{
+				name: 'bed',
+				description: 'A small bed with a thin mattress.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' against the wall.'
+			},
+			{
+				name: 'nightstand',
+				altNames: ['dresser'],
+				description: 'A small wooden nightstand with a drawer.',
+				canGet: false,
+				listOnLook: true,
+				positionalPhrase: ' next to the bed.',
+				inventory: [
+					{
+						name: 'Cellar Key',
+						altNames: ['cellar key'],
+						description: 'A small iron key.',
+						keyId: 'cellar-key',
+						canGet: true,
+						listOnLook: false
+					}
+				]
+			},
+			{
+				name: 'Bathroom Door',
+				altNames: ['door', 'bathroom door'],
+				description: "It's a door that leads to the bathroom.",
+				neededKeyId: 'bathroom-key',
+				actions: [
+					{
+						commands: ['use'],
+						events: [{
+							name: 'toggleLockExit',
+							target: 'Bathroom'
+						}]
+					},
+					{
+						commands: lockVerbs,
+						events: [{
+							name: 'lockExit',
+							target: 'Bathroom'
+						}]
+					},
+					{
+						commands: unlockVerbs,
+						events: [{
+							name: 'unlockExit',
+							target: 'Bathroom'
+						}]
+					}
+				]
+			}
+		]
+	},
+	{
+		name: 'Kitchen',
+		description: 'You are in a small kitchen. There is a table in the middle of the room and a door to the north leading back to the living room.',
+		exits: [
+			{
+				destination: 'Living Room',
+				direction: 'north'
 			}
 		],
 		interactables: [
@@ -719,27 +929,124 @@ function randomFromList(list) {
 	return list[i];
 }
 
-function mapSocketsToUsernames(socketList) {
-	let ret = [];
-	for(socketKeyValue of socketList) {
-		// console.log(socketKeyValue[1]);
-		ret.push(socketKeyValue[1].data.name);
-	}
-	return ret;
+//-------User Collection-----------
+// create new user
+async function createUser(username, lobbyName, socketId) {
+	return db.collection("users").insertOne({
+			username,
+			lobbyName,
+			currentWorldRoomName: INITIAL_WORLD_START_ROOM,
+			inventory: [],
+			socketId,
+			createdAt: new Date()
+	});
 }
+
+//load existing user
+async function getUserFromDB(username) {
+	return db.collection("users").findOne({username});
+}
+
+//update user fields
+async function updateUser(username, fields){
+	return db.collection("users").updateOne(
+		{username},
+		{$set: fields}
+	);
+}
+
+
+
+//------------Lobbies Collection------------
+async function createLobby(lobbyName, username) {
+	return db.collection("lobbies").insertOne({
+		lobbyName,
+		users: [username],
+		gameRooms: structuredClone(INITIAL_WORLD_DATA),
+		createdAt: new Date()
+	});
+}
+
+
+async function getLobbyFromDB(lobbyName) {
+	return db.collection("lobbies").findOne({lobbyName});
+}
+
+async function updateLobby(lobbyName, updateDoc, options = {}) {
+  return db.collection("lobbies").updateOne(
+    { lobbyName },
+    updateDoc,
+    options
+  );
+}
+
+
+
+//-----------Room States-------------
+
+async function saveRoomState(lobbyName, roomName, updateDoc, options = {}) {
+  return db.collection("roomStates").updateOne(
+    { lobbyName, roomName },
+    updateDoc,
+    { upsert: true, ...options }
+  );
+}
+
+
+async function getRoomState(lobbyName, roomName) {
+	return db.collection("roomStates").findOne({lobbyName, roomName});
+}
+
+
+//--------------Command Logging----------------
+async function logCommand(lobbyName, username, command, response) {
+	return db.collection("commandsAndResponses").insertOne({
+		lobbyName,
+		user: username,
+		command,
+		response,
+		time: new Date()
+	});
+}
+
 
 //Every time a client connects (visits the page) this function(socket) {...} gets executed.
 //The socket is a different object each time a new client connects.
-io.on("connection", function(socket) {
+io.on("connection", async function(socket) {
+
+	async function emitUserList(lobbyName) {
+		const socketsInLobby = await io.in(lobbyName).fetchSockets();
+		const userList = [];
+
+		for (const s of socketsInLobby) {
+			const u = await db.collection("users").findOne({ username: s.data.name });
+			if (u) userList.push({ name: u.username, room: u.currentWorldRoomName });
+		}
+		io.to(lobbyName).emit("updateUserList", userList);
+	}
+
 	// console.log("Somebody connected.");
 	
+	socket.on("reconnectUser", async (username, callback)=>{
+		const user = await getUserFromDB(username);
+		if(!user) return callback(false, "User not found.");
+
+		socket.data.name = user.username;
+		socket.data.lobbyName = user.lobbyName;
+		socket.data.currentWorldRoomName = user.currentWorldRoomName || INITIAL_WORLD_START_ROOM;
+		socket.data.inventory = user.inventory || [];
+
+		socket.join(user.lobbyName);
+		callback(true, "Reconnected");
+ 	})
 
 	//socket.data is a convenience object where we can store application data
 	socket.data.name = randomFromList(adjectives) +" "+ randomFromList(nouns);
-
+	socket.data.lobbyName = null;
+	socket.data.roomName = null;
 
 	// Leave the current lobby
-	function leaveLobbyInternal(socket) {
+	async function leaveLobbyInternal(socket){
 		const lobbyName = socket.data.lobbyName;
 		if (!lobbyName) return;
 
@@ -755,6 +1062,7 @@ io.on("connection", function(socket) {
 		// Remove this user from the lobby
 		lobby.users = lobby.users.filter(s => s.id !== socket.id);
 
+
 		socket.leave(lobbyName);
 		console.log(socket.data.name + " left " + lobbyName);
 		io.to(socket.data.lobbyName).emit("userLeftLobby", socket.data.name);
@@ -766,7 +1074,9 @@ io.on("connection", function(socket) {
 
 			currentLobby.users = currentLobby.users.filter(u => u.name !== socket.data.name);
 
-			io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
+			// io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
+			await emitUserList(lobbyName);
+
 		}
 
 
@@ -809,6 +1119,35 @@ io.on("connection", function(socket) {
 		return objectName;
 	}
 
+	// async function getUserFromDB(username) {
+	// 	return db.collection("users").findOne({username});
+	// }
+
+	// async function getLobbyFromDB(lobbyName) {
+	// 	return db.collection("lobbies").findOne({lobbyName});
+	// }
+
+	// async function updateUserRoom(username, roomName) {
+	// 	return db.collection("users").updateOne(
+	// 		{username},
+	// 		{$set: {currentWorldRoomName: roomName}}
+	// 	);
+	// }
+
+	async function getCurrentGameRoom(lobby, roomName) {
+		return lobby.gameRooms.find(r=>r.name===roomName);
+	}
+
+	// async function saveLobbyGameRooms(lobbyName, gameRooms) {
+	// 	return db.collection("lobbies").updateOne(
+	// 		{lobbyName},
+	// 		{$set: {gameRooms}}
+	// 	);
+	// }
+
+
+
+
 	async function parseCommand(command) {
 		/**
 		 * TODO: Make a command parser
@@ -828,6 +1167,23 @@ io.on("connection", function(socket) {
 		 * Maybe items could have unique behaviors corresponding to the commands that were tried on them?
 		 * Will we have realtime things going on besides the players?
 		 */
+
+		let response = '';
+		const username = socket.data.name;
+		// const lobbyName = socket.data.lobbyName;
+
+		let user = await getUserFromDB(username);
+		if (!user) return "User not found.";
+
+		const freshUser = await db.collection("users").findOne({ username });
+        if (!freshUser) return "User not found.";
+
+        const freshLobby = await db.collection("lobbies").findOne({ lobbyName: freshUser.lobbyName });
+        if (!freshLobby) return "Lobby not found.";
+
+       const gameRoom = freshLobby.gameRooms.find(r => r.name === freshUser.currentWorldRoomName);
+       if (!gameRoom) return "Room not found.";
+
 
 		// Split the command by spaces into an array
 		let words = command.split(" ");
@@ -894,6 +1250,7 @@ io.on("connection", function(socket) {
 			index += 1;
 		}
 
+
 		let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
 		let secondaryObjectName = getObjectNameFromIndices(words, secondaryObjectStartIndex, words.length - 1);
 		let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
@@ -922,47 +1279,66 @@ io.on("connection", function(socket) {
 		else if (['help', 'h'].includes(verb)) {
 			response = "TODO: output some text to help the user.";
 		}
-		else if (['north', 'n', 'south', 's', 'east', 'e', 'west', 'w', 'up', 'u', 'down', 'd'].includes(verb)) {
-			// TODO: allow using the command "go" to prefex the direction.
-			// Extend the shortcut direction commands to their full word so that they can be used to filter the array
-			if (verb === 'n') verb = 'north';
-			else if (verb === 's') verb = 'south';
-			else if (verb === 'e') verb = 'east';
-			else if (verb === 'w') verb = 'west';
-			else if (verb === 'u') verb = 'up';
-			else if (verb === 'd') verb = 'down';
+		else if (['north','n','south','s','east','e','west','w','up','u','down','d'].includes(verb)) {
 
-			let exit = gameRoom.exits.find(exit => exit.direction === verb);
-			if (exit) {
-				let destinationRoom = currentLobby.gameRooms.find(r => r.name == exit.destination);
-				if (exit.isLocked) {
-					response = "It's locked.";
-				} else {
-					socket.data.currentWorldRoomName = exit.destination;
-					// Update this player's room in the lobby user list
-					let userEntry = currentLobby.users.find(u => u.name === socket.data.name);
-					if (userEntry) {
-						userEntry.room = socket.data.currentWorldRoomName;
-					}
+			const map = { n:'north', s:'south', e:'east', w:'west', u:'up', d:'down' };
+			if (map[verb]) verb = map[verb];
 
-					// Push new user list to all clients
-					io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
+			// 1. ALWAYS load fresh user from DB
+			const freshUser = await db.collection("users").findOne({ username });
+			if (!freshUser) return "User not found.";
 
-					response = getRoomDescription(destinationRoom);
-	
-					// Notify the relevant users that this user changed game rooms
-					let socketsInLobby = await io.in(socket.data.lobbyName).fetchSockets();
-					let usersInExitedRoom = socketsInLobby.filter(s => s.data.currentWorldRoomName == gameRoom.name);
-					let usersInDestinationRoom = socketsInLobby.filter(s => s.data.currentWorldRoomName == destinationRoom.name);
-					for (user of usersInExitedRoom) {
-						socket.to(user.id).emit('event', socket.data.name + " just went " + verb, 'user');
-					}
-					for (user of usersInDestinationRoom) {
-						socket.to(user.id).emit('event', socket.data.name + " just entered from the " + verb, 'user');
-					}
-				}
-			} else
-				response = "There is no exit in that direction";
+			// 2. ALWAYS load fresh lobby from DB
+			const freshLobby = await db.collection("lobbies").findOne({ lobbyName: freshUser.lobbyName });
+			if (!freshLobby) return "Lobby not found.";
+
+			// 3. Get the fresh room data
+			const gameRoom = freshLobby.gameRooms.find(r => r.name === freshUser.currentWorldRoomName);
+			if (!gameRoom) return "Room not found.";
+
+
+
+
+			// 4. Now get the correct exit
+			let exit = gameRoom.exits.find(ex => ex.direction === verb);
+			if (!exit) return "There is no exit in that direction.";
+
+			if (exit.isLocked) return "It's locked.";
+
+			const destinationRoom = freshLobby.gameRooms.find(r => r.name === exit.destination);
+			if (!destinationRoom) return "Destination room not found.";
+
+			// 5. Update user position in DB
+			//2번 수정
+			// await db.collection("users").updateOne(
+			// 	{ username },
+			// 	{ $set: }
+			// );
+			await updateUser(username, { currentWorldRoomName: exit.destination });
+
+// 			await db.collection("lobbies").updateOne(
+// 			{ lobbyName: freshLobby.lobbyName },   
+// 			{ $set: { gameRooms: freshLobby.gameRooms } }
+// );
+
+
+			socket.data.currentWorldRoomName = exit.destination;
+
+			// 6. Rebuild user list and broadcast
+			const socketsInLobby = await io.in(freshUser.lobbyName).fetchSockets();
+			let userList = [];
+
+			for (let s of socketsInLobby) {
+				const u = await db.collection("users").findOne({ username: s.data.name });
+				if (u) userList.push({ name: u.username, room: u.currentWorldRoomName });
+			}
+
+			// io.to(freshUser.lobbyName).emit("updateUserList", userList);
+			await emitUserList(freshUser.lobbyName);
+
+
+
+			return getRoomDescription(destinationRoom);
 		}
 		else if (['inventory', 'i', 'inv'].includes(verb)) {
 			socket.emit('commandResponse',
@@ -971,6 +1347,37 @@ io.on("connection", function(socket) {
 		}
 		else if (['get', 'take', 'grab'].includes(verb)) {
 			if (objectName !== '') {
+				let itemToTakeIndex = gameRoom.interactables.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+				if (itemToTakeIndex != -1) {
+					if (gameRoom.interactables[itemToTakeIndex].canGet) {
+						// Remove the item from the gameRoom
+						let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
+						// Push the item to the player's inventory
+						socket.data.inventory.push(takenItem);
+
+						// await db.collection("users").updateOne(
+						// 	{username: socket.data.name},
+						// 	{$set: {inventory: socket.data.inventory}}
+						// );
+						await updateUser(username, {inventory: socket.data.inventory});
+
+
+
+						response = "You took the " + takenItem.name;
+						// Remove the positionalPhrase from the item
+						takenItem.positionalPhrase = '';
+						// for (user of await getSocketsInGameRoom(gameRoom)) {
+						// 	socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+						// }
+						io.to(freshLobby.lobbyName).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+						
+						// await db.collection("lobbies").updateOne(
+						// 	{lobbyName: freshLobby.lobbyName},
+						// 	{$set: {gameRooms: freshLobby.gameRooms}}
+						// );
+						await updateLobby(freshLobby.lobbyName, { $set:{gameRooms: freshLobby.gameRooms}});
+					} else response = "You can't take that!";
+				} else response = "There doesn't seem to be one of those here.";
 				if (preposition !== '') {
 					let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
 					if (container) {
@@ -1024,11 +1431,22 @@ io.on("connection", function(socket) {
 					let droppedItem = socket.data.inventory.splice(itemToDropIndex, 1)[0];
 					// Push the item to the gameRoom
 					gameRoom.interactables.push(droppedItem);
+
+					// await db.collection("users").updateOne(
+					// 	{username: socket.data.name},
+					// 	{$set: {inventory: socket.data.inventory}}
+					// );
+					await updateUser(username, {inventory: socket.data.inventory});
 					response = "You dropped the " + droppedItem.name + " on the ground.";
 					droppedItem.positionalPhrase = " on the ground."
 					for (user of await getSocketsInGameRoom(gameRoom)) {
 						socket.to(user.id).emit('event', socket.data.name + " just dropped " + droppedItem.name, 'user');
 					}
+					// await db.collection("lobbies").updateOne(
+					// 	{lobbyName},
+					// 	{$set: {gameRooms: freshLobby.gameRooms}}
+					// );
+					await updateLobby(lobbyName, { $set:{gameRooms: freshLobby.gameRooms}});
 				} else response = "You don't seem to be carrying \"" + objectName + "\"";
 			}
 			else response = verb + " what?";
@@ -1070,19 +1488,25 @@ io.on("connection", function(socket) {
 					let secondaryItem = socket.data.inventory.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
 					if (!secondaryItem) // if it doesn't exist in the inventory, look for it in the room.
 						secondaryItem = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
+					if (!secondaryItem && secondaryObjectName === "door") {
+						// Find exit in this room that leads somewhere
+						// let exit = gameRoom.exits?.find(e => e.isLocked !== undefined);
+						let exit = gameRoom.exits?.find(e=>e.isLocked !== undefined);
+						if (exit) {
+							// Create a pseudo-item representing the door.
+							secondaryItem = {
+								name: "door",
+								isExitObject: true,
+								neededKeyId: "old-room-key",    // key required
+								_exitTarget: exit.destination   // store where it leads
+							};
+						}
+					}
+
 					if (secondaryItem) {
 						let events = secondaryItem.actions?.find(action => action.commands.includes(verb))?.events;
 						let eventResponses = [];
-						if (events) {
-							for (eventObject of events) {
-								let actingItem = itemToUse;
-								let itemToBeActedOn = secondaryItem;
-								let eventResponse = interactableFunctions[eventObject.name](socket, eventObject, actingItem, itemToBeActedOn);
-								if (eventResponse !== undefined && eventResponse !== '')
-									eventResponses.push(eventResponse);
-							}
-						}
-						response = eventResponses.join(' ');
+						
 					} else if (preposition)
 						response = "Use the " + objectName + " on what?";
 					else
@@ -1119,13 +1543,16 @@ io.on("connection", function(socket) {
 						else
 							actingItem = { wasNotGiven: true };
 						let itemToBeActedOn = primaryItem;
-						let eventResponse = interactableFunctions[eventObject.name](socket, eventObject, actingItem, itemToBeActedOn);
+						let eventResponse = await interactableFunctions[eventObject.name](socket, eventObject, actingItem, itemToBeActedOn);
 						if (eventResponse !== undefined && eventResponse !== '')
 							eventResponses.push(eventResponse);
 					}
 				}
-				if (eventResponses.length)
+				if (eventResponses.length){
 					response = eventResponses.join(' ');
+					
+				}
+				
 				else
 					response = "It seems you can't " + verb + " the " + objectName
 					+ (secondaryItem ? (' with the ' + secondaryItem.name + '.') : '.');
@@ -1137,29 +1564,62 @@ io.on("connection", function(socket) {
 		if (response != '')
 			socket.emit('commandResponse', response);
 
-		let responseObj = {
-			lobby: socket.data.lobbyName,
-			user: socket.data.name,
-			command: command,
-			response: response,
-			time: new Date()
-		};
+		// let responseObj = {
+		// 	lobby: socket.data.lobbyName,
+		// 	user: socket.data.name,
+		// 	command: command,
+		// 	response: response,
+		// 	time: new Date()
+		// };
 
-		await db.collection("commandsAndResponses").insertOne(responseObj);
+		// await db.collection("commandsAndResponses").insertOne(responseObj);
+		await logCommand(socket.data.lobbyName, username, command, response);
 	}
 
-	socket.on("disconnect", function() {
+	socket.on("disconnect", async function() {
 		//This particular socket connection was terminated (probably the client went to a different page
 		//or closed their browser).
 
-		let username = socket.data.username;
-		// Remove user from their room
-		leaveLobbyInternal(socket);
+		let username = socket.data.name;
+		let lobbyName = socket.data.lobbyName;
 
-		let currentLobby = lobbies.filter(room => room.name == socket.data.lobbyName)[0];
-		if (currentLobby) {
-			io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
+		// Remove user from their room
+		// leaveLobbyInternal(socket);
+
+		if (!username) {
+			const user = await db.collection("users").findOne({socketId:socket.id});
+			if (user){
+				username = user.username;
+				lobbyName = user.lobbyName;
+			}
 		}
+
+		if (!lobbyName || !username) return;
+
+		// await db.collection("lobbies").updateOne(
+		// 	{lobbyName},
+		// 	{$pull: {users: username}}
+		// );
+		await updateLobby(lobbyName, { $pull: { users: username } });
+
+		// await db.collection("users").updateOne(
+		// 	{username},
+		// 	{$set: {socketId: null}}
+		// );
+		await updateUser(username, {socketId: null});
+
+		await db.collection("roomStates").updateMany(
+			{lobbyName},
+			{$pull: {players: username}}
+		);
+
+		io.to(lobbyName).emit("userLeftLobby", username);
+
+		// const updatedLobby = await db.collection("lobbies").findOne({lobbyName});
+		const updatedLobby = await getLobbyFromDB(lobbyName);
+		// io.to(lobbyName).emit("updateUserList", updatedLobby ? updatedLobby.users:[]);
+		await emitUserList(lobbyName);
+
 	});
 
 	socket.on("directMessage", function(targetUser, text) {
@@ -1172,83 +1632,136 @@ io.on("connection", function(socket) {
 		}
 	});
 
-	socket.on("joinLobby", function(lobbyName, username, callback) {
-		let allIds = Array.from(io.sockets.sockets.keys());
-		let duplicate = false;
-		for(id of allIds) {
-			if(io.sockets.sockets.get(id).data.name == username) {
-				duplicate = true;
+
+	socket.on("joinLobby", async function (lobbyName, username, callback) {
+		for (const [id,s] of io.sockets.sockets){
+			if (s.data?.name === username && s.id !== socket.id){
+				return callback(false, "User already logged in.");
+			}
+		}
+		
+		socket.data.name = username;
+		socket.data.lobbyName = lobbyName;
+
+		let existingUser = await db.collection("users").findOne({ username });
+		if (!existingUser) {
+			await createUser(username, lobbyName, socket.id);
+
+			socket.data.currentWorldRoomName = INITIAL_WORLD_START_ROOM;
+			socket.data.inventory = [];
+		}else{
+			// await db.collection("users").updateOne(
+			// 	{username},
+			// 	{$set: {
+			// 		lobbyName,
+			// 		socketId: socket.id
+			// 	}}
+			// );
+			await updateUser(username, {
+					lobbyName,
+					socketId: socket.id
+				});
+			
+			socket.data.currentWorldRoomName =
+				existingUser.currentWorldRoomName || INITIAL_WORLD_START_ROOM;
+			socket.data.inventory = existingUser.inventory || [];
+		}
+
+		let existingLobby = await db.collection("lobbies").findOne({ lobbyName });
+		if (!existingLobby) {
+			// await db.collection("lobbies").insertOne({
+			// 	lobbyName,
+			// 	users: [username],
+			// 	createdAt: new Date(),
+			// 	gameRooms: structuredClone(INITIAL_WORLD_DATA)
+			// });
+			await createLobby(lobbyName, username);
+		}else{
+			if(!existingLobby.users.includes(username)){
+				// await db.collection("lobbies").updateOne(
+				// 	{lobbyName},
+				// 	{$addToSet:{users:username}}
+				// );
+				await updateLobby(lobbyName, { $addToSet: { users: username } });
 			}
 		}
 
-		if (!duplicate) {
-			socket.data.name = username; //TODO: Be wary of ANY data coming from the client.
-		}
-		else {
-			callback(false, "Username " + username + " is already taken. Try another.");
+		
+		socket.join(lobbyName);
+		io.to(lobbyName).emit("userJoinedLobby", username);
+		let updatedLobby = await db.collection("lobbies")
+		 	.findOne({lobbyName});
+		
+		// io.to(lobbyName).emit("updateUserList", updatedLobby.users);
+		await emitUserList(lobbyName);
+
+
+
+		callback(true, "logged in");
+	});
+
+
+	socket.on("joinRoom", async function(roomName, callback) {
+		const lobbyName = socket.data.lobbyName;
+		const username = socket.data.name;
+
+		if (!lobbyName){
+			if (callback) callback(false, "Join a lobby first");
 			return;
 		}
 
-		socket.data.lobbyName = lobbyName; //TODO: Be wary of ANY data coming from the client.
+		socket.join(roomName);
 
-		// Place the new user/socket in a room
-		socket.join(lobbyName);
+		socket.data.roomName = roomName; //TODO: Be wary of ANY data coming from the client.
+		
 
-		socket.data.currentWorldRoomName = INITIAL_WORLD_START_ROOM
-
-		let lobbyToJoin = lobbies.filter(lobby => lobby.name == lobbyName)[0];
-		if (lobbyToJoin) {
-			if (lobbyToJoin?.users?.length >= MAX_USERS_PER_LOBBY) {
-				callback(false, "That lobby is full!");
-				return;
-			}
-
-			lobbyToJoin.users.push({
-				name: socket.data.name,
-				room: socket.data.currentWorldRoomName
+		// await db.collection("users").updateOne(
+		// 	{username},
+		// 	{
+		// 		$set:{
+		// 			currentWorldRoomName: roomName,
+		// 			lobbyName: lobbyName,
+		// 			updatedAt: new Date()
+		// 		}
+		// 	}
+		// );
+		await updateUser(username, {
+				currentWorldRoomName: roomName,
+				lobbyName: lobbyName,
+				updatedAt: new Date()
 			});
-			io.to(lobbyName).emit("updateUserList", lobbyToJoin.users);
-		} else {
-			// Note the difference between a server room (now called a lobby) and a game room
-			let newLobby = {
-				name: lobbyName,
-				gameRooms: structuredClone(INITIAL_WORLD_DATA),
-				users: [{
-					name: socket.data.name,
-					room: socket.data.currentWorldRoomName
-				}]
-			};
-			lobbies.push(newLobby);
-			lobbyToJoin = newLobby;
-		}
 
-		if (!lobbyMessages[lobbyName]){
-			lobbyMessages[lobbyName] = [];
-		}
 
-		socket.data.inventory = [
-			// Default starting inventory
-			{
-				name: "scrap of paper",
-				altNames: ['paper'],
-				description: "It's a tattered piece of blank paper.",
-				canGet: true,
-				listOnLook: true,
-			},
-			{
-				name: "pencil",
-				description: "It's a yellow wooden pencil with a dried out eraser.",
-				canGet: true,
-				listOnLook: true,
-			}
-		];
+		// await db.collection("roomStates").updateOne(
+		// 	{ lobbyName, roomName },
+		// 	{
+		// 		$addToSet: { players: username},
+		// 		$set: {updatedAt: new Date()}
+		// 	},
+		// 	{ upsert: true }
+		// );
+		await saveRoomState(lobbyName, roomName, {
+			$addToSet: { players: username },
+			$set: { updatedAt: new Date() }
+		});
+
+
+		// await db.collection("lobbies").updateOne(
+		// 	{lobbyName},
+		// 	{$addToSet: {users: username}}
+		// );
+		await updateLobby(lobbyName, { $addToSet: { users: username } });
+
+		const updatedLobby = await db.collection("lobbies")
+			.findOne({lobbyName});
+
+
+		
+		// io.to(lobbyName).emit("updateUserList", updatedLobby.users);
+		await emitUserList(lobbyName);
 
 		// the "callback" below calls the method that the client side gave
-		callback(true, "Joined successfully");
-		io.to(socket.data.lobbyName).emit("userJoinedLobby", socket.data.name);
-		let currentGameRoom = lobbyToJoin.gameRooms.find(r => r.name == socket.data.currentWorldRoomName)
-		socket.emit('event', getRoomDescription(currentGameRoom));
-		io.to(socket.data.lobbyName).emit("updateUserList", lobbyToJoin.users);
+		if (callback) callback(true, "Joined successfully");
 	});
 
 	// Handle leave lobby request
@@ -1262,14 +1775,28 @@ io.on("connection", function(socket) {
 	});
 
 	// sendChat is no longer used on the client side. (users use the "say" command)
+	// socket.on("sendChat", async function(chatMessage) {
+	// 	let lobbyName = socket.data.lobbyName;
+	// 	let currentLobby = socket.data.lobbyName;
+	// 	let messageObj = {
+	// 		room: currentLobby,
+	// 		user: socket.data.name,
+	// 		text: chatMessage,
+
+	// 	}
+		
+	// 	await db.collection("messages").insertOne(messageObj);
+
+	// 	io.to(currentLobby).emit("messageSent", 
+	// 		`${messageObj.user}:${messageObj.text}`
+	// 	);
+	// });
+	//3번 수정
 	socket.on("sendChat", async function(chatMessage) {
-		let lobbyName = socket.data.lobbyName;
-		let currentLobby = socket.data.lobbyName;
-		// let m = socket.data.name + ": " + chatMessage;
-		// messages.push(m);
-		// lobbyMessages[lobbyName].push(m);
-		let messageObj = {
-			room: currentLobby,
+		const lobbyName = socket.data.lobbyName;
+
+		const messageObj = {
+			lobbyName,
 			user: socket.data.name,
 			text: chatMessage,
 			time: new Date()
@@ -1277,12 +1804,53 @@ io.on("connection", function(socket) {
 
 		await db.collection("messages").insertOne(messageObj);
 
-		io.to(currentLobby).emit("messageSent", 
-			`${messageObj.user}:${messageObj.text}`
-		);
+		io.to(lobbyName).emit("messageSent", `${messageObj.user}:${messageObj.text}`);
 	});
 
-	//retrieve stored chat history for this lobby
+
+	socket.on("sendCommand", async function(cmd, callback) {
+
+		const username = socket.data.name;
+		const lobbyName = socket.data.lobbyName;
+		const roomName = socket.data.roomName;
+
+		if (!lobbyName){
+			if (callback) callback(false, "You are not in a lobby.");
+			return;
+		}
+
+		// const response = `You typed: ${cmd}`;
+		const response = await parseCommand(cmd);
+
+
+		if (response){
+			//retrieve stored chat history for this lobby
+			socket.emit("commandResponse", response);
+		}
+			
+	
+		if (callback) callback(true, response||"");
+	});
+
+
+
+	//retrieve stored chat history for this room
+	// socket.on("showChatHistory", async function(callback){
+	// 	const lobbyName = socket.data.lobbyName;
+	// 	if (!lobbyName){
+	// 		if (callback) callback(false, "You are not in a lobby.", []);
+	// 		return;
+	// 	}
+
+	// 	// const history = lobbyMessages[lobbyName] || [];
+	// 	const history = await db.collection("messages")
+	// 		.find({room:roomName})
+	// 		.sort({time:1})
+	// 		.toArray();
+
+	// 	if (callback) callback(true, history);
+	// });
+	//4번 수정
 	socket.on("showChatHistory", async function(callback){
 		const lobbyName = socket.data.lobbyName;
 		if (!lobbyName){
@@ -1290,42 +1858,28 @@ io.on("connection", function(socket) {
 			return;
 		}
 
-		// const history = lobbyMessages[lobbyName] || [];
 		const history = await db.collection("messages")
-			.find({room:roomName})
-			.sort({time:1})
+			.find({ lobbyName })
+			.sort({ time: 1 })
 			.toArray();
 
 		if (callback) callback(true, history);
 	});
 
 
-	socket.on("sendCommand", function(command, callback) {
-		const lobbyName = socket.data.lobbyName;
-		if (!lobbyName){
-			callback(false, "You are not in a lobby.");
-			return;
-		}
 
-		const lobby = lobbies.find(r => r.name === lobbyName);
-		if (!lobby) {
-			callback(false, "Lobby not found.");
-			return;
-		}
-		parseCommand(command);
-		callback(true, "");
-	});
 
 
 	// List players in the current lobby
-	socket.on("listPlayers", function(callback){
+	socket.on("listPlayers", async function(callback){
 		const lobbyName = socket.data.lobbyName;
 		if (!lobbyName){
 			if (callback) callback(false, "You are not in a lobby.", []);
 			return;
 		}
 
-		const lobby = lobbies.find(r => r.name === lobbyName);
+		// const lobby = lobbies.find(r => r.name === lobbyName);
+		const lobby = await getLobbyFromDB(socket.data.lobbyName);
 		if (!lobby) {
 			if (callback) callback(false, "Lobby not found.", []);
 			return;
@@ -1333,6 +1887,41 @@ io.on("connection", function(socket) {
 
 		callback(true, lobby.users);
 	});
+
+		// =============== DB TESTING EVENTS ==================
+
+	// GET USER
+	socket.on("dbTest:getUser", async (username, callback) => {
+	const user = await db.collection("users").findOne({ username });
+	if (user) callback(true, user);
+	else callback(false, null);
+	});
+
+	// GET LOBBY
+	socket.on("dbTest:getLobby", async (lobbyName, callback) => {
+	const lob = await db.collection("lobbies").findOne({ lobbyName });
+	if (lob) callback(true, lob);
+	else callback(false, null);
+	});
+
+	// GET ROOM STATE
+	socket.on("dbTest:getRoomState", async (lobbyName, roomName, callback) => {
+	const state = await getRoomState(lobbyName, roomName);
+	if (state) callback(true, state);
+	else callback(false, null);
+	});
+
+	// GET COMMAND LOGS
+	socket.on("dbTest:getCommands", async (lobbyName, callback) => {
+	const logs = await db.collection("commandsAndResponses")
+		.find({ lobbyName })
+		.sort({ time: 1 })
+		.toArray();
+
+	if (logs.length > 0) callback(true, logs);
+	else callback(false, null);
+	});
+
 });
 
 
@@ -1340,7 +1929,7 @@ async function run() {
 	// Connect the client to the server (optional starting in v4.7)
 	await client.connect();
 	// Send a ping to confirm a successful connection
-	db = client.db("mudGame");
+	db = client.db("mudGame2");
 	console.log("You successfully connected to MongoDB!");
 	
 	server.listen(8080, function() {
@@ -1355,3 +1944,14 @@ async function shutDown() {
 	process.exit(0);
 }
 process.on('SIGINT', shutDown); //If you hit ctrl-c, it triggers the shutDown method
+
+
+async function clearDB() {
+    await client.connect();
+    const db = client.db("mudGame2");
+    await db.dropDatabase();
+    console.log("mudGame database erased completely");
+    process.exit(0);
+}
+
+// clearDB();   
