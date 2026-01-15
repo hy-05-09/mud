@@ -51,6 +51,25 @@ export default {
 				// this.chatHistory = previousChatMessages;
 				console.log("Joined lobby successfully!");
 			});
+			
+		},
+		leaveLobby(){
+			socket.emit("leaveLobby", (ok, msg) => {
+				if (!ok) { 
+					alert(msg || "Failed to leave lobby");
+					return;
+				}
+
+				this.inputText="";
+				this.chatHistory=[];
+				this.userList = [];
+				this.username = null;
+				localStorage.removeItem("mud_last_username");
+
+				// console.log(username);
+				this.requestedUsername = "";
+				this.requestedLobbyName = "";
+			});
 		},
 		handleIntro(){
 			this.joinLobby();
@@ -76,12 +95,14 @@ export default {
 	mounted() {
 		socket.on("connect", () => {
 			const username = localStorage.getItem("mud_last_username");
-			const token = localStorage.getItem(`mud_token:${username}`);
-			if (!username || !token) return;
+				const token = localStorage.getItem(`mud_token:${username}`);
+				if (!username || !token) return;
 
-			socket.emit("reconnectUser", username, token, (ok, msg) => {
-
-			});
+				socket.emit("reconnectUser", username, token, (ok, msg) => {
+					if (ok) {
+						this.username = username;
+					}
+				});
 		});
 		socket.on("messageSent", (chatMessage) => {
 			this.addChatHistory(chatMessage, 'message');
@@ -109,6 +130,9 @@ export default {
 }
 </script>
 <template>
+	<div class="top-bar">
+		<button v-if="username != null" @click="leaveLobby">Logout</button>
+	</div>
     <div id="container">
       	<div id="chat" ref="chatBox">
         	<template v-for="chat of chatHistory" :key="chat.text">

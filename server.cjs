@@ -989,12 +989,19 @@ async function updateLobby(lobbyName, updateDoc, options = {}) {
 
 
 //-----------Room States-------------
-
-async function saveRoomState(lobbyName, roomName, updateDoc, options = {}) {
+async function updateRoomState(lobbyName, roomName, updateDoc, options = {}) {
   return db.collection("roomStates").updateOne(
     { lobbyName, roomName },
     updateDoc,
-    { upsert: true, ...options }
+    options
+  );
+}
+
+async function updateRoomStates(lobbyName, updateDoc, options = {}) {
+  return db.collection("roomStates").updateMany(
+    { lobbyName },
+    updateDoc,
+    options
   );
 }
 
@@ -1031,68 +1038,69 @@ io.on("connection", async function(socket) {
 		io.to(lobbyName).emit("updateUserList", userList);
 	}
 
-	// console.log("Somebody connected.");
-	
-	socket.on("reconnectUser", async (username, token, callback)=>{
-		const user = await getUserFromDB(username);
-		if(!user) return callback(false, "User not found.");
+	async function cleanupUserSession(socket) {
+		//This particular socket connection was terminated (probably the client went to a different page
+		//or closed their browser).
 
-		if (user.reconnectToken !== token) {
-			return callback(false, "Unauthorized.");
+		let username = socket.data.name;
+		let lobbyName = socket.data.lobbyName;
+
+		if (!username || !lobbyName) {
+			const user = await db.collection("users").findOne({socketId:socket.id});
+			if (user){
+				username = user.username;
+				lobbyName = user.lobbyName;
+			}
 		}
+		if (!username || !lobbyName) return;
 
-		await updateUser(username, {$set: {socketId: socket.id}});
+		await updateLobby(lobbyName, { $pull: { users: username } });
+		await updateUser(username, {$set:{socketId: null}});
+		await updateRoomStates(lobbyName, {$pull: {players: username}});
 
-		socket.data.name = user.username;
-		socket.data.lobbyName = user.lobbyName;
-		socket.data.currentWorldRoomName = user.currentWorldRoomName || INITIAL_WORLD_START_ROOM;
-		socket.data.inventory = user.inventory || [];
-
-		socket.join(user.lobbyName);
-		callback(true, "Reconnected");
- 	})
-
-	//socket.data is a convenience object where we can store application data
-	socket.data.name = randomFromList(adjectives) +" "+ randomFromList(nouns);
-	socket.data.lobbyName = null;
-	socket.data.roomName = null;
-
-	// Leave the current lobby
-	async function leaveLobbyInternal(socket){
-		const lobbyName = socket.data.lobbyName;
-		if (!lobbyName) return;
-
-		// Find lobby by name
-		const lobbyIndex = lobbies.findIndex(r => r.name === lobbyName);
-		if (lobbyIndex === -1) {
-			socket.data.lobbyName = null;
-			return;
-		}
-
-		const lobby = lobbies[lobbyIndex];
-
-		// Remove this user from the lobby
-		lobby.users = lobby.users.filter(s => s.id !== socket.id);
-
-		socket.leave(lobbyName);
-		console.log(socket.data.name + " left " + lobbyName);
-		io.to(socket.data.lobbyName).emit("userLeftLobby", socket.data.name);
-		let currentLobby = lobbies.find(room => room.name === socket.data.lobbyName);
-		if (currentLobby) {
-			let gameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
-			// Drop this user's items in the game room
-			gameRoom.interactables = gameRoom.interactables.concat(socket.data.inventory);
-
-			currentLobby.users = currentLobby.users.filter(u => u.name !== socket.data.name);
-
-			// io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
-			await emitUserList(lobbyName);
-
-		}
-		// TODO (optional): If the lobby is empty, delete the lobby
+		io.to(lobbyName).emit("userLeftLobby", username);
+		await emitUserList(lobbyName);
 
 		socket.data.lobbyName = null;
 	}
+
+
+	// Leave the current lobby
+	// async function leaveLobbyInternal(socket){
+	// 	const lobbyName = socket.data.lobbyName;
+	// 	if (!lobbyName) return;
+
+	// 	// Find lobby by name
+	// 	const lobbyIndex = lobbies.findIndex(r => r.name === lobbyName);
+	// 	if (lobbyIndex === -1) {
+	// 		socket.data.lobbyName = null;
+	// 		return;
+	// 	}
+
+	// 	const lobby = lobbies[lobbyIndex];
+
+	// 	// Remove this user from the lobby
+	// 	lobby.users = lobby.users.filter(s => s.id !== socket.id);
+
+	// 	socket.leave(lobbyName);
+	// 	console.log(socket.data.name + " left " + lobbyName);
+	// 	io.to(socket.data.lobbyName).emit("userLeftLobby", socket.data.name);
+	// 	let currentLobby = lobbies.find(room => room.name === socket.data.lobbyName);
+	// 	if (currentLobby) {
+	// 		let gameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
+	// 		// Drop this user's items in the game room
+	// 		gameRoom.interactables = gameRoom.interactables.concat(socket.data.inventory);
+
+	// 		currentLobby.users = currentLobby.users.filter(u => u.name !== socket.data.name);
+
+	// 		// io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
+	// 		await emitUserList(lobbyName);
+
+	// 	}
+	// 	// TODO (optional): If the lobby is empty, delete the lobby
+
+	// 	socket.data.lobbyName = null;
+	// }
 
 	function getRoomDescription(room) {
 		let desc = room.description;
@@ -1526,52 +1534,39 @@ io.on("connection", async function(socket) {
 		await logCommand(socket.data.lobbyName, username, command, response);
 	}
 
-	socket.on("disconnect", async function() {
-		//This particular socket connection was terminated (probably the client went to a different page
-		//or closed their browser).
-
-		let username = socket.data.name;
-		let lobbyName = socket.data.lobbyName;
-
-		// Remove user from their room
-		// leaveLobbyInternal(socket);
-
-		if (!username) {
-			const user = await db.collection("users").findOne({socketId:socket.id});
-			if (user){
-				username = user.username;
-				lobbyName = user.lobbyName;
-			}
+	//socket.data is a convenience object where we can store application data
+	socket.data.name = randomFromList(adjectives) +" "+ randomFromList(nouns);
+	socket.data.lobbyName = null;
+	socket.data.roomName = null;
+	
+	socket.on("reconnectUser", async (username, token, callback)=>{
+		const user = await getUserFromDB(username);
+		const lobbyName = user.lobbyName;
+		if(!user) return callback(false, "User not found.");
+		if (user.reconnectToken !== token) {
+			return callback(false, "Unauthorized.");
 		}
 
-		if (!lobbyName || !username) return;
+		await updateUser(username, {$set: {socketId: socket.id}});
 
-		await updateLobby(lobbyName, { $pull: { users: username } });
+		socket.data.name = user.username;
+		socket.data.lobbyName = lobbyName;
+		socket.data.currentWorldRoomName = user.currentWorldRoomName || INITIAL_WORLD_START_ROOM;
+		socket.data.inventory = user.inventory || [];
 
-		await updateUser(username, {$set:{socketId: null}});
+		socket.join(lobbyName);
 
-		await db.collection("roomStates").updateMany(
-			{lobbyName},
-			{$pull: {players: username}}
-		);
-
-		io.to(lobbyName).emit("userLeftLobby", username);
-
-		// const updatedLobby = await db.collection("lobbies").findOne({lobbyName});
-		const updatedLobby = await getLobbyFromDB(lobbyName);
-		// io.to(lobbyName).emit("updateUserList", updatedLobby ? updatedLobby.users:[]);
+		await updateLobby(lobbyName, {$addToSet:{username: username}});
+		await updateRoomState(lobbyName, user.roomName, {$addToSet:{username:username}});
 		await emitUserList(lobbyName);
+		io.to(lobbyName).emit("userJoinedLobby", username);
 
-	});
+		callback(true, "Reconnected");
+ 	})
 
-	socket.on("directMessage", function(targetUser, text) {
-		for(id of Array.from(io.sockets.sockets.keys())) {
-			if (io.sockets.sockets.get(id).data.name == targetUser.name) {
-				let m = socket.data.name + " just whispered to " + targetUser.name + ": " + text;
-				io.sockets.sockets.get(id).emit("messageSent", m);
-				socket.emit("messageSent", m); //also informs the one who sent the whisper
-			}
-		}
+	//얘 프론트에 연결해야함***********
+	socket.on("disconnect", async function() {
+		await cleanupUserSession(socket);
 	});
 
 
@@ -1619,49 +1614,57 @@ io.on("connection", async function(socket) {
 	});
 
 
-	socket.on("joinRoom", async function(roomName, callback) {
-		const lobbyName = socket.data.lobbyName;
-		const username = socket.data.name;
+	// socket.on("joinRoom", async function(roomName, callback) {
+	// 	const lobbyName = socket.data.lobbyName;
+	// 	const username = socket.data.name;
 
-		if (!lobbyName){
-			if (callback) callback(false, "Join a lobby first");
-			return;
-		}
+	// 	if (!lobbyName){
+	// 		if (callback) callback(false, "Join a lobby first");
+	// 		return;
+	// 	}
 
-		socket.join(roomName);
+	// 	socket.join(roomName);
 
-		socket.data.roomName = roomName; //TODO: Be wary of ANY data coming from the client.
+	// 	socket.data.roomName = roomName; //TODO: Be wary of ANY data coming from the client.
 		
-		await updateUser(username, {$set:{
-				currentWorldRoomName: roomName,
-				lobbyName: lobbyName,
-				updatedAt: new Date()
-			}});
+	// 	await updateUser(username, {$set:{
+	// 			currentWorldRoomName: roomName,
+	// 			lobbyName: lobbyName,
+	// 			updatedAt: new Date()
+	// 		}});
 
-		await saveRoomState(lobbyName, roomName, {
-			$addToSet: { players: username },
-			$set: { updatedAt: new Date() }
-		});
+	// 	await saveRoomState(lobbyName, roomName, {
+	// 		$addToSet: { players: username },
+	// 		$set: { updatedAt: new Date() }
+	// 	});
 
-		await updateLobby(lobbyName, { $addToSet: { users: username } });
+	// 	await updateLobby(lobbyName, { $addToSet: { users: username } });
 
-		const updatedLobby = await db.collection("lobbies")
-			.findOne({lobbyName});
+	// 	const updatedLobby = await db.collection("lobbies")
+	// 		.findOne({lobbyName});
 
-		await emitUserList(lobbyName);
+	// 	await emitUserList(lobbyName);
 
-		// the "callback" below calls the method that the client side gave
-		if (callback) callback(true, "Joined successfully");
-	});
+	// 	// the "callback" below calls the method that the client side gave
+	// 	if (callback) callback(true, "Joined successfully");
+	// });
 
+	// ********* 얘 처리하ㅣㄱ*************************
 	// Handle leave lobby request
-	socket.on("leaveLobby", function(callback){
-		leaveLobbyInternal(socket);
+	socket.on("leaveLobby", async function(callback){
+		const lobbyName = socket.data.lobbyName;
+		if (lobbyName) socket.leave(lobbyName);
 
+		await cleanupUserSession(socket);
+		
+		socket.data.lobbyName = null;
+		socket.data.roomName = null;
+		socket.data.currentWorldRoomName = null;
+		socket.data.inventory = [];
+		socket.data.name = null;
 		if (callback) {
 			callback(true, "Left lobby successfully.");
 		}
-
 	});
 
 	// sendChat is no longer used on the client side. (users use the "say" command)
@@ -1682,19 +1685,29 @@ io.on("connection", async function(socket) {
 	// 	);
 	// });
 	//3번 수정
-	socket.on("sendChat", async function(chatMessage) {
-		const lobbyName = socket.data.lobbyName;
+	// socket.on("sendChat", async function(chatMessage) {
+	// 	const lobbyName = socket.data.lobbyName;
 
-		const messageObj = {
-			lobbyName,
-			user: socket.data.name,
-			text: chatMessage,
-			time: new Date()
-		};
+	// 	const messageObj = {
+	// 		lobbyName,
+	// 		user: socket.data.name,
+	// 		text: chatMessage,
+	// 		time: new Date()
+	// 	};
 
-		await db.collection("messages").insertOne(messageObj);
+	// 	await db.collection("messages").insertOne(messageObj);
 
-		io.to(lobbyName).emit("messageSent", `${messageObj.user}:${messageObj.text}`);
+	// 	io.to(lobbyName).emit("messageSent", `${messageObj.user}:${messageObj.text}`);
+	// });
+
+	socket.on("directMessage", function(targetUser, text) {
+		for(id of Array.from(io.sockets.sockets.keys())) {
+			if (io.sockets.sockets.get(id).data.name == targetUser.name) {
+				let m = socket.data.name + " just whispered to " + targetUser.name + ": " + text;
+				io.sockets.sockets.get(id).emit("messageSent", m);
+				socket.emit("messageSent", m); //also informs the one who sent the whisper
+			}
+		}
 	});
 
 
@@ -1721,7 +1734,7 @@ io.on("connection", async function(socket) {
 	
 		if (callback) callback(true, response||"");
 	});
-	
+
 
 	//retrieve stored chat history for this room
 	// socket.on("showChatHistory", async function(callback){
@@ -1740,6 +1753,7 @@ io.on("connection", async function(socket) {
 	// 	if (callback) callback(true, history);
 	// });
 	//4번 수정
+	// *********************이거 처리하기*******
 	socket.on("showChatHistory", async function(callback){
 		const lobbyName = socket.data.lobbyName;
 		if (!lobbyName){
