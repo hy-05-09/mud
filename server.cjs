@@ -1011,16 +1011,132 @@ async function getRoomState(lobbyName, roomName) {
 }
 
 
-//--------------Command Logging----------------
-async function logCommand(lobbyName, username, command, response) {
-	return db.collection("commandsAndResponses").insertOne({
+//--------------Logging----------------
+/**
+ * Insert a log entry into DB.
+ * Required: lobbyName, type, visibility, from
+ * Optional: to, users[], text, command, response
+ */
+async function insertLog(entry){
+	const doc = { ...entry, time: entry.time ?? new Date()};
+	await db.collection("logEntries").insertOne(doc);
+	return doc;
+}
+
+/**
+ * Visibility rules:
+ * - lobby: everyone in the lobby
+ * - pair: only users listed in doc.users (e.g. [from,to])
+ * - self: only doc.from (the actor)
+ */
+
+/** Emit a saved log entry to everyone in lobby */
+async function emitLobbyLog(lobbyName, entry){
+	const saved = await insertLog({
 		lobbyName,
-		user: username,
-		command,
-		response,
-		time: new Date()
+		type: entry.type ?? "system",
+		visibility: "lobby",
+		from: entry.from ?? "SYSTEM",
+		...entry
+		});
+	io.to(lobbyName).emit("logEntry", saved);
+	return saved;
+}
+
+/** Emit a saved log entry to everyone in lobby */
+async function emitSystem(lobbyName, text){
+	return emitLobbyLog(lobbyName, {
+		type: "system",
+		from: "SYSTEM",
+		text
 	});
 }
+
+/**
+ * Emit a chat message (say)
+ * from: username
+ */
+async function emitChat({lobbyName, from, text}){
+	return emitLobbyLog(lobbyName, {
+		type: "chat",
+		from,
+		text
+	}); 
+}
+
+/**
+ * Emit whisper log to sender + receiver only.
+ * You MUST pass the sender socket (current socket).
+ */
+async function emitWhisper(socket, lobbyName, from, to, text){
+	const saved = await insertLog({
+		lobbyName,
+		type: "whisper",
+		visibility: "pair",
+		from,
+		to,
+		users: [from, to],
+		text
+	});
+
+	//sender
+	socket.emit("logEntry", saved);
+
+	//receiver
+	const targetUser = await getUserFromDB(to);
+	const targetSocket = targetUser?.socketId ? io.sockets.sockets.get(targetUser.socketId) : null;
+
+	if (targetSocket?.connected) targetSocket.emit("logEntry", saved);
+	
+	return saved;
+}
+
+/**
+ * Emit whisper log to sender + receiver only.
+ * You MUST pass the sender socket (current socket).
+ */
+async function emitCommand(socket, lobbyName, username, command, response) {
+	const saved = await insertLog({
+		lobbyName,
+		type: "command",
+		visibility: "self",
+		from: username,
+		command,
+		response
+	});
+
+	socket.emit("logEntry", saved);
+	return saved;
+}
+
+/**
+ * Read history visible to this user:
+ * - lobby logs visible to all
+ * - pair logs where users contains username
+ * - self logs where from === username
+ */
+async function fetchVisibleHistory({lobbyName, username, limit = 200}){
+	const n = Math.min(Number(limit) || 200, 500);
+
+	const query = {
+		lobbyName,
+		$or: [
+			{visibility: "lobby"},
+			{visibility: "self", from: username},
+			{visibility: "pair", users: username},
+		],
+	};
+
+	const logs = await db
+		.collection("logEntries")
+		.find(query)
+		.sort({time: -1})
+		.limit(n)
+		.toArray();
+
+	return logs.reverse();
+}
+
 
 
 //Every time a client connects (visits the page) this function(socket) {...} gets executed.
@@ -1058,49 +1174,12 @@ io.on("connection", async function(socket) {
 		await updateUser(username, {$set:{socketId: null}});
 		await updateRoomStates(lobbyName, {$pull: {players: username}});
 
-		io.to(lobbyName).emit("userLeftLobby", username);
+		// io.to(lobbyName).emit("userLeftLobby", username);
+		await emitSystem(lobbyName, `${username} joined the game.`);
 		await emitUserList(lobbyName);
 
 		socket.data.lobbyName = null;
 	}
-
-
-	// Leave the current lobby
-	// async function leaveLobbyInternal(socket){
-	// 	const lobbyName = socket.data.lobbyName;
-	// 	if (!lobbyName) return;
-
-	// 	// Find lobby by name
-	// 	const lobbyIndex = lobbies.findIndex(r => r.name === lobbyName);
-	// 	if (lobbyIndex === -1) {
-	// 		socket.data.lobbyName = null;
-	// 		return;
-	// 	}
-
-	// 	const lobby = lobbies[lobbyIndex];
-
-	// 	// Remove this user from the lobby
-	// 	lobby.users = lobby.users.filter(s => s.id !== socket.id);
-
-	// 	socket.leave(lobbyName);
-	// 	console.log(socket.data.name + " left " + lobbyName);
-	// 	io.to(socket.data.lobbyName).emit("userLeftLobby", socket.data.name);
-	// 	let currentLobby = lobbies.find(room => room.name === socket.data.lobbyName);
-	// 	if (currentLobby) {
-	// 		let gameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
-	// 		// Drop this user's items in the game room
-	// 		gameRoom.interactables = gameRoom.interactables.concat(socket.data.inventory);
-
-	// 		currentLobby.users = currentLobby.users.filter(u => u.name !== socket.data.name);
-
-	// 		// io.to(socket.data.lobbyName).emit("updateUserList", currentLobby.users);
-	// 		await emitUserList(lobbyName);
-
-	// 	}
-	// 	// TODO (optional): If the lobby is empty, delete the lobby
-
-	// 	socket.data.lobbyName = null;
-	// }
 
 	function getRoomDescription(room) {
 		let desc = room.description;
@@ -1135,11 +1214,6 @@ io.on("connection", async function(socket) {
 		}
 		return objectName;
 	}
-
-	async function getCurrentGameRoom(lobby, roomName) {
-		return lobby.gameRooms.find(r=>r.name===roomName);
-	}
-
 
 	async function parseCommand(command) {
 		/**
@@ -1197,7 +1271,8 @@ io.on("connection", async function(socket) {
 					verb = "look at";
 				}
 				else if (verb === '') {
-					socket.emit('commandResponse', 'Your command must contain a verb.');
+					// socket.emit('commandResponse', 'Your command must contain a verb.');
+					await emitCommand(socket, freshLobby, freshUser, command, 'Your command must contain a verb.');
 					return;
 				}
 				else if (preposition === '') {
@@ -1214,11 +1289,13 @@ io.on("connection", async function(socket) {
 						else
 							secondaryObjectStartIndex = index + 1;
 					} else {
-						socket.emit('commandResponse', verb + " " + word + " what?");
+						// socket.emit('commandResponse', verb + " " + word + " what?");
+						await emitCommand(socket, freshLobby, freshUser, command, verb + " " + word + " what?");
 						return;
 					}
 				} else {
-					socket.emit('commandResponse', 'There is more than one preposition in that sentence.');
+					// socket.emit('commandResponse', 'There is more than one preposition in that sentence.');
+					await emitCommand(socket, freshLobby, freshUser, command, 'There is more than one preposition in that sentence.');
 					return;
 				}
 			}
@@ -1229,7 +1306,8 @@ io.on("connection", async function(socket) {
 				} else if (['say', 'speak', 'talk'].includes(verb)) {
 					// Do nothing
 				} else {
-					socket.emit('commandResponse', 'There is more than one verb in that sentence.')
+					// socket.emit('commandResponse', 'There is more than one verb in that sentence.');
+					await emitCommand(socket, freshLobby, freshUser, command, 'There is more than one verb in that sentence.');
 					return;
 				}
 			}
@@ -1323,7 +1401,10 @@ io.on("connection", async function(socket) {
 			return getRoomDescription(destinationRoom);
 		}
 		else if (['inventory', 'i', 'inv'].includes(verb)) {
-			socket.emit('commandResponse',
+			// socket.emit('commandResponse',
+			// 	"You are carrying: " + (socket.data.inventory.length ? socket.data.inventory.map(item => item?.name).join(", ") : 'nothing')
+			// );
+			await emitCommand(socket, freshLobby, freshUser, command, 
 				"You are carrying: " + (socket.data.inventory.length ? socket.data.inventory.map(item => item?.name).join(", ") : 'nothing')
 			);
 		}
@@ -1485,7 +1566,8 @@ io.on("connection", async function(socket) {
 		else if (['say', 'speak', 'talk'].includes(verb)) {
 			let quote = unmodifiedWords.slice(verbIndex + 1).join(' ');
 			let m = socket.data.name + " says \"" + quote + "\"";
-			socket.to(socket.data.lobbyName).emit("messageSent", m);
+			// socket.to(socket.data.lobbyName).emit("messageSent", m);
+			await emitChat(lobbyName, username, quote);
 			response = "You said \"" + quote + "\"";
 			// TODO: make the players only able to talk to the players in the same game world room?
 		}
@@ -1529,9 +1611,9 @@ io.on("connection", async function(socket) {
 		else response = "I didn't understand that.";
 
 		if (response != '')
-			socket.emit('commandResponse', response);
-
-		await logCommand(socket.data.lobbyName, username, command, response);
+			// socket.emit('commandResponse', response);
+		await emitCommand(socket, freshLobby, freshUser, command, response);
+		// await logCommand(socket.data.lobbyName, username, command, response);
 	}
 
 	//socket.data is a convenience object where we can store application data
@@ -1541,10 +1623,19 @@ io.on("connection", async function(socket) {
 	
 	socket.on("reconnectUser", async (username, token, callback)=>{
 		const user = await getUserFromDB(username);
+		if (!user) return callback(false, "User not found");
+		
 		const lobbyName = user.lobbyName;
-		if(!user) return callback(false, "User not found.");
+
 		if (user.reconnectToken !== token) {
 			return callback(false, "Unauthorized.");
+		}
+
+		if (user.socketId && user.socketId !== socket.id) {
+			const oldSocket = io.sockets.sockets.get(user.socketId);
+			if (oldSocket && oldSocket.connected) {
+			return callback(false, "User already logged in.");
+			}
 		}
 
 		await updateUser(username, {$set: {socketId: socket.id}});
@@ -1556,15 +1647,14 @@ io.on("connection", async function(socket) {
 
 		socket.join(lobbyName);
 
-		await updateLobby(lobbyName, {$addToSet:{username: username}});
-		await updateRoomState(lobbyName, user.roomName, {$addToSet:{username:username}});
+		await updateLobby(lobbyName, {$addToSet:{users: username}});
+		await updateRoomState(lobbyName, user.currentWorldRoomName, {$addToSet:{username:username}});
 		await emitUserList(lobbyName);
-		io.to(lobbyName).emit("userJoinedLobby", username);
-
+		// io.to(lobbyName).emit("userJoinedLobby", username);
+		await emitSystem(lobbyName, `${username} joined the game.`);
 		callback(true, "Reconnected");
  	})
 
-	//얘 프론트에 연결해야함***********
 	socket.on("disconnect", async function() {
 		await cleanupUserSession(socket);
 	});
@@ -1582,9 +1672,9 @@ io.on("connection", async function(socket) {
 			if (user.reconnectToken !== token) {
 				return callback(false, "Unauthorized.");
 			}
-			if (user?.socketId){
+			if (user.socketId && user.socketId !== socket.id){
 				const oldSocket = io.sockets.sockets.get(user.socketId);
-				if (oldSocket && oldSocket.connected && oldSocket.id !== socket.id){
+				if (oldSocket && oldSocket.connected){
 					return callback(false, "User already logged in.");
 				}
 			}
@@ -1607,49 +1697,13 @@ io.on("connection", async function(socket) {
 		}
 
 		socket.join(lobbyName);
-		io.to(lobbyName).emit("userJoinedLobby", username);
+		// io.to(lobbyName).emit("userJoinedLobby", username);
+		await emitSystem(lobbyName, `${username} joined the game.`);
 		await emitUserList(lobbyName);
 
 		callback(true, "logged in", {token});
 	});
 
-
-	// socket.on("joinRoom", async function(roomName, callback) {
-	// 	const lobbyName = socket.data.lobbyName;
-	// 	const username = socket.data.name;
-
-	// 	if (!lobbyName){
-	// 		if (callback) callback(false, "Join a lobby first");
-	// 		return;
-	// 	}
-
-	// 	socket.join(roomName);
-
-	// 	socket.data.roomName = roomName; //TODO: Be wary of ANY data coming from the client.
-		
-	// 	await updateUser(username, {$set:{
-	// 			currentWorldRoomName: roomName,
-	// 			lobbyName: lobbyName,
-	// 			updatedAt: new Date()
-	// 		}});
-
-	// 	await saveRoomState(lobbyName, roomName, {
-	// 		$addToSet: { players: username },
-	// 		$set: { updatedAt: new Date() }
-	// 	});
-
-	// 	await updateLobby(lobbyName, { $addToSet: { users: username } });
-
-	// 	const updatedLobby = await db.collection("lobbies")
-	// 		.findOne({lobbyName});
-
-	// 	await emitUserList(lobbyName);
-
-	// 	// the "callback" below calls the method that the client side gave
-	// 	if (callback) callback(true, "Joined successfully");
-	// });
-
-	// ********* 얘 처리하ㅣㄱ*************************
 	// Handle leave lobby request
 	socket.on("leaveLobby", async function(callback){
 		const lobbyName = socket.data.lobbyName;
@@ -1667,126 +1721,76 @@ io.on("connection", async function(socket) {
 		}
 	});
 
-	// sendChat is no longer used on the client side. (users use the "say" command)
-	// socket.on("sendChat", async function(chatMessage) {
-	// 	let lobbyName = socket.data.lobbyName;
-	// 	let currentLobby = socket.data.lobbyName;
-	// 	let messageObj = {
-	// 		room: currentLobby,
-	// 		user: socket.data.name,
-	// 		text: chatMessage,
+	socket.on("directMessage", async function(targetUser, text) {
+		const fromUser = socket.data.name;
+		const fromLobby = socket.data.lobbyName;
 
-	// 	}
-		
-	// 	await db.collection("messages").insertOne(messageObj);
-
-	// 	io.to(currentLobby).emit("messageSent", 
-	// 		`${messageObj.user}:${messageObj.text}`
-	// 	);
-	// });
-	//3번 수정
-	// socket.on("sendChat", async function(chatMessage) {
-	// 	const lobbyName = socket.data.lobbyName;
-
-	// 	const messageObj = {
-	// 		lobbyName,
-	// 		user: socket.data.name,
-	// 		text: chatMessage,
-	// 		time: new Date()
-	// 	};
-
-	// 	await db.collection("messages").insertOne(messageObj);
-
-	// 	io.to(lobbyName).emit("messageSent", `${messageObj.user}:${messageObj.text}`);
-	// });
-
-	socket.on("directMessage", function(targetUser, text) {
-		for(id of Array.from(io.sockets.sockets.keys())) {
-			if (io.sockets.sockets.get(id).data.name == targetUser.name) {
-				let m = socket.data.name + " just whispered to " + targetUser.name + ": " + text;
-				io.sockets.sockets.get(id).emit("messageSent", m);
-				socket.emit("messageSent", m); //also informs the one who sent the whisper
-			}
+		if (!fromUser || !fromLobby){
+			// socket.emit("messageSent", "You are not in a lobby.");
+			await emitCommand(socket, null, fromUser ?? "UNKNOWN", "whisper", "You are not in a lobby.");
+			return;
 		}
+
+		const targetName = targetUser?.name;
+		if (!targetName) {
+			// socket.emit("messageSent", "Invalid target user.");
+			await emitCommand(socket, fromLobby, fromUser, "whisper", "Invalid target user.");
+			return;
+		}
+
+		const target = await getUserFromDB(targetName);
+		if (!target) {
+			// socket.emit("messageSent", `User ${targetName} not found.`);
+			await emitCommand(socket, fromLobby, fromUser, "whisper", `User ${targetName} not found.`)
+			return;
+		}
+
+		if (target.lobbyName !== fromLobby) {
+			// socket.emit("messageSent", `User ${targetName} is not in your lobby.`);
+			await emitCommand(socket, fromLobby, fromUser, "whisper", `User ${targetName} is not in your lobby.`);
+			return;
+		}
+
+		const targetSocket = target.socketId ? io.sockets.sockets.get(target.socketId) : null;
+		if (!targetSocket || !targetSocket.connected) {
+			// socket.emit("messageSent", `User ${targetName} is offline.`);
+			await emitCommand(socket, fromLobby, fromUser, "whisper", `User ${targetName} is offline.`);
+			return;
+		}
+
+		// const msg = `${fromUser} whispered to ${targetName}: ${text}`;
+		// targetSocket.emit("messageSent", msg);
+		// socket.emit("messageSent", msg);
+		await emitWhisper(socket, fromLobby, fromUser, targetName, text);
 	});
 
 
 	socket.on("sendCommand", async function(cmd, callback) {
+		try {
+			const lobbyName = socket.data.lobbyName;
+			if (!lobbyName) return callback?.(false, "You are not in a lobby.");
 
+			// const response = `You typed: ${cmd}`;
+			const response = await parseCommand(cmd);
+			// if (response) socket.emit("commandResponse", response);
+			if (response) await emitCommand(socket, freshLobby, freshUser, command, response);
+	
+			callback?.(true);
+		} catch (err) {
+			console.error("sendCommand error:", err);
+			callback?.(false, "Server error while processing command.");
+		}
+	});
+
+	socket.on("showChatHistory", async function(limit, callback){
 		const username = socket.data.name;
 		const lobbyName = socket.data.lobbyName;
-		const roomName = socket.data.roomName;
+		if (!username || !lobbyName) return callback(false, "You are not in a lobby.", []);
 
-		if (!lobbyName){
-			if (callback) callback(false, "You are not in a lobby.");
-			return;
-		}
-
-		// const response = `You typed: ${cmd}`;
-		const response = await parseCommand(cmd);
-
-
-		if (response){
-			//retrieve stored chat history for this lobby
-			socket.emit("commandResponse", response);
-		}
-			
-	
-		if (callback) callback(true, response||"");
+		const history = await fetchVisibleHistory({lobbyName, username, limit});
+		callback(true, history);
 	});
 
-
-	//retrieve stored chat history for this room
-	// socket.on("showChatHistory", async function(callback){
-	// 	const lobbyName = socket.data.lobbyName;
-	// 	if (!lobbyName){
-	// 		if (callback) callback(false, "You are not in a lobby.", []);
-	// 		return;
-	// 	}
-
-	// 	// const history = lobbyMessages[lobbyName] || [];
-	// 	const history = await db.collection("messages")
-	// 		.find({room:roomName})
-	// 		.sort({time:1})
-	// 		.toArray();
-
-	// 	if (callback) callback(true, history);
-	// });
-	//4번 수정
-	// *********************이거 처리하기*******
-	socket.on("showChatHistory", async function(callback){
-		const lobbyName = socket.data.lobbyName;
-		if (!lobbyName){
-			if (callback) callback(false, "You are not in a lobby.", []);
-			return;
-		}
-
-		const history = await db.collection("messages")
-			.find({ lobbyName })
-			.sort({ time: 1 })
-			.toArray();
-
-		if (callback) callback(true, history);
-	});
-
-
-	// List players in the current lobby
-	socket.on("listPlayers", async function(callback){
-		const lobbyName = socket.data.lobbyName;
-		if (!lobbyName){
-			if (callback) callback(false, "You are not in a lobby.", []);
-			return;
-		}
-
-		// const lobby = lobbies.find(r => r.name === lobbyName);
-		const lobby = await getLobbyFromDB(socket.data.lobbyName);
-		if (!lobby) {
-			if (callback) callback(false, "Lobby not found.", []);
-			return;
-		}
-
-		callback(true, lobby.users);
-	});
 
 		// =============== DB TESTING EVENTS ==================
 
@@ -1829,7 +1833,7 @@ async function run() {
 	// Connect the client to the server (optional starting in v4.7)
 	await client.connect();
 	// Send a ping to confirm a successful connection
-	db = client.db("mudGame2");
+	db = client.db("mudGame");
 	console.log("You successfully connected to MongoDB!");
 	
 	server.listen(8080, function() {
@@ -1848,7 +1852,7 @@ process.on('SIGINT', shutDown); //If you hit ctrl-c, it triggers the shutDown me
 
 async function clearDB() {
     await client.connect();
-    const db = client.db("mudGame2");
+    const db = client.db("mudGame");
     await db.dropDatabase();
     console.log("mudGame database erased completely");
     process.exit(0);

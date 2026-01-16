@@ -93,7 +93,6 @@ button:active {
   width: 85%;
   height: 100%;
   background-color: black;
-  color: white;
   overflow-y: scroll;
   display: inline-block;
   text-align: left;
@@ -152,4 +151,8 @@ button:active {
 
 .text-message {
   color: #a2f35b;
+}
+
+.text-command {
+  color:#ffffff;
 }
