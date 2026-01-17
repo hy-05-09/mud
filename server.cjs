@@ -932,6 +932,9 @@ async function createUser({username, lobbyName, socketId}) {
 	const reconnectToken = crypto.randomBytes(32).toString("hex");
 	await db.collection("users").insertOne({
 			username,
+			status: "online",
+			lastDisconnectAt: new Date(),
+			lastLeftAt: new Date(),
 			lobbyName,
 			currentWorldRoomName: INITIAL_WORLD_START_ROOM,
 			inventory: [],
@@ -1043,7 +1046,11 @@ async function emitLobbyLog(lobbyName, entry, opts={}){
 
 /** Emit a saved log entry to everyone in lobby */
 async function emitSystem(lobbyName, text, opts){
-	return emitLobbyLog(lobbyName, {type: "system", from: "SYSTEM", text}, opts);
+	return emitLobbyLog(lobbyName, {
+		type: "system", 
+		from: "SYSTEM", 
+		text}, 
+		opts);
 }
 
 /**
@@ -1138,41 +1145,53 @@ async function fetchVisibleHistory({lobbyName, username, limit = 200}){
 io.on("connection", async function(socket) {
 
 	async function emitUserList(lobbyName) {
-		const socketsInLobby = await io.in(lobbyName).fetchSockets();
-		const userList = [];
+		// const socketsInLobby = await io.in(lobbyName).fetchSockets();
+		// const userList = [];
 
-		for (const s of socketsInLobby) {
-			const u = await db.collection("users").findOne({ username: s.data.name });
-			if (u) userList.push({ name: u.username, room: u.currentWorldRoomName });
-		}
-		io.to(lobbyName).emit("updateUserList", userList);
-	}
+		// for (const s of socketsInLobby) {
+		// 	const u = await getUserFromDB(s.data.name)
+		// 	if (u) userList.push({ name: u.username, room: u.currentWorldRoomName });
+		// }
+		// io.to(lobbyName).emit("updateUserList", userList);
 
-	async function cleanupUserSession(socket) {
-		//This particular socket connection was terminated (probably the client went to a different page
-		//or closed their browser).
+		const lobby = await getLobbyFromDB(lobbyName);
+		if (!lobby) return;
 
-		let username = socket.data.name;
-		let lobbyName = socket.data.lobbyName;
+		const now = Date.now();
+		const roster = [];
 
-		if (!username || !lobbyName) {
-			const user = await db.collection("users").findOne({socketId:socket.id});
-			if (user){
-				username = user.username;
-				lobbyName = user.lobbyName;
+		for (const username of lobby.users || []){
+			const u = await getUserFromDB(username);
+			if (!u) continue;
+
+			let online = false; 
+			if (u.socketId){
+				const s = io.sockets.sockets.get(u.socketId);
+				online = Boolean(s && s.connected);
 			}
+
+			let status = "offline";
+			if (online) status = "online";
+			else {
+				const lastDic = u.lastDisconnectAt ? new Date(u.lastDisconnectAt).getTime : 0;
+				const lastLeft = u.lastLeftAt ? new Date(u.lastLeftAt).getTime : 0;
+
+				const leftRecently = lastLeft && lastleft >= lastDic;
+				if (!leftRecently && lastDic && (now-lastDic) < 60_000){
+					status = "reconnecting";
+				}
+				else status = "offline";
+			}
+
+			roster.push({
+				name:u.username,
+				room: u.currentWorldRoomName ?? INITIAL_WORLD_DATA, 
+				status, 
+				lastSeenAt: u.lastSeenAt ?? null
+			})
 		}
-		if (!username || !lobbyName) return;
-
-		await updateLobby(lobbyName, { $pull: { users: username } });
-		await updateUser(username, {$set:{socketId: null}});
-		await updateRoomStates(lobbyName, {$pull: {players: username}});
-
-		// io.to(lobbyName).emit("userLeftLobby", username);
-		await emitSystem(lobbyName, `${username} left the game.`);
-		await emitUserList(lobbyName);
-
-		socket.data.lobbyName = null;
+		
+		io.to(lobbyName).emit("updateUserList", roster);
 	}
 
 	function getRoomDescription(room) {
@@ -1636,8 +1655,6 @@ io.on("connection", async function(socket) {
 			}
 		}
 
-		await updateUser(username, {$set: {socketId: socket.id}});
-
 		socket.data.name = user.username;
 		socket.data.lobbyName = lobbyName;
 		socket.data.currentWorldRoomName = user.currentWorldRoomName || INITIAL_WORLD_START_ROOM;
@@ -1645,6 +1662,10 @@ io.on("connection", async function(socket) {
 
 		socket.join(lobbyName);
 
+		await updateUser(username, {
+			$set: {socketId: socket.id, status: "online", lastSeenAt: new Date()},
+			$unset: {lastLeftAt: ""}
+		});
 		await updateLobby(lobbyName, {$addToSet:{users: username}});
 		await updateRoomState(lobbyName, user.currentWorldRoomName, {$addToSet:{username:username}});
 		await emitUserList(lobbyName);
@@ -1654,74 +1675,123 @@ io.on("connection", async function(socket) {
  	})
 
 	socket.on("disconnect", async function() {
-		await cleanupUserSession(socket);
+		let username = socket.data.name;
+		let lobbyName = socket.data.lobbyName;
+
+		if (!username || !lobbyName) {
+			const user = await db.collection("users").findOne({socketId:socket.id});
+			if (user){
+				username = user.username;
+				lobbyName = user.lobbyName;
+			}
+		}
+		if (!username || !lobbyName) return;
+
+		await updateUser(username, {
+			$set:{
+				socketId: null,
+				status: "reconnecting",
+				lastDisconnectAt: new Date(),
+				lastSeenAt: new Date()
+			}
+		});
+		await updateRoomStates(lobbyName, {$pull: {players: username}});
+
+		// io.to(lobbyName).emit("userLeftLobby", username);
+		await emitSystem(lobbyName, `${username} disconnected. (reconnecting...)`);
+		await emitUserList(lobbyName);
+
+		socket.data.lobbyName = null;
 	});
 
 
 	socket.on("joinLobby", async function (lobbyName, username, token, callback) {
-		let user = await db.collection("users").findOne({ username });
-		let lobby = await db.collection("lobbies").findOne({ lobbyName });
-		
-		if (!user) {
-			token = await createUser({username, lobbyName, socketId: socket.id});
-			socket.data.currentWorldRoomName = INITIAL_WORLD_START_ROOM;
-			socket.data.inventory = [];
-		}else{
-			if (user.reconnectToken !== token) {
-				return callback(false, "Unauthorized.");
-			}
-			if (user.socketId && user.socketId !== socket.id){
-				const oldSocket = io.sockets.sockets.get(user.socketId);
-				if (oldSocket && oldSocket.connected){
-					return callback(false, "User already logged in.");
+		try{
+			let user = await getUserFromDB(username);
+			if (!user) {
+				token = await createUser({username, lobbyName, socketId: socket.id});
+				user = await getUserFromDB(username);
+			}else{
+				if (user.reconnectToken !== token) {
+					return callback(false, "Unauthorized.");
 				}
+				if (user.socketId && user.socketId !== socket.id){
+					const oldSocket = io.sockets.sockets.get(user.socketId);
+					if (oldSocket && oldSocket.connected){
+						return callback(false, "User already logged in.");
+					}
+				}
+				token = user.reconnectToken;	
 			}
-			token = user.reconnectToken;
-			await updateUser(username, {$set:{lobbyName, socketId: socket.id}});
 
+			let lobby = await getLobbyFromDB(lobbyName);
+			if (!lobby) {
+				await createLobby({lobbyName, createdBy: username});
+				lobby = await getLobbyFromDB(lobbyName);
+			}
+
+			socket.data.name = username;
+			socket.data.lobbyName = lobbyName;
 			socket.data.currentWorldRoomName = user.currentWorldRoomName || INITIAL_WORLD_START_ROOM;
 			socket.data.inventory = user.inventory || [];
+
+			socket.join(lobbyName);
+
+			await updateUser(username, {
+				$set:{
+					lobbyName, 
+					socketId: socket.id, 
+					status: "online", 
+					lastSeenAt: new Date()
+				},
+				$unset: {lastLeftAt: ""}
+			});
+			await updateLobby(lobbyName, { $addToSet: { users: username } });
+			
+			await emitUserList(lobbyName);
+			await emitSystem(lobbyName, `${username} joined the game.`);
+
+			const room = lobby.gameRooms.find(r => r.name === socket.data.currentWorldRoomName);
+			const desc = room ? getRoomDescription(room) : "Room not found.";
+			await emitCommand(socket, lobbyName, username, "join", desc);
+
+			callback(true, "logged in", {token, maxPlayers: MAX_USERS_PER_LOBBY});
+		} catch(err){
+			callback(false, "Server error.");
 		}
-
-		socket.data.name = username;
-		socket.data.lobbyName = lobbyName;
-
-		if (!lobby) {
-			await createLobby({lobbyName, createdBy: username});
-		}else{
-			if(!lobby.users.includes(username)){
-				await updateLobby(lobbyName, { $addToSet: { users: username } });
-			}
-		}
-
-		socket.join(lobbyName);
-		// io.to(lobbyName).emit("userJoinedLobby", username);
-		await emitSystem(lobbyName, `${username} joined the game.`);
-		await emitUserList(lobbyName);
-
-		const lobbyFresh = await getLobbyFromDB(lobbyName);
-		const room = lobbyFresh.gameRooms.find(r => r.name === socket.data.currentWorldRoomName);
-		const desc = room ? getRoomDescription(room) : "Room not found.";
-		await emitCommand(socket, lobbyName, username, "join", desc);
-
-		callback(true, "logged in", {token});
 	});
 
 	// Handle leave lobby request
 	socket.on("leaveLobby", async function(callback){
+		const username = socket.data.name;
 		const lobbyName = socket.data.lobbyName;
-		if (lobbyName) socket.leave(lobbyName);
+		if (!username || !lobbyName) return callback?.(false, "Not in a lobby.");
 
-		await cleanupUserSession(socket);
-		
+		socket.leave(socket.data.lobbyName);
+
+		await updateUser(username, {
+			$set: {
+				socketId: null,
+				status: "offline",
+				leftAt: new Date(),
+				lastSeenAt: new Date()
+			}
+		});
+
+		await updateRoomStates(lobbyName, {
+			$pull: { players: username}
+		});
+
+		await emitSystem(lobbyName, `${username} left the game.`);
+		await emitUserList(lobbyName);
+
 		socket.data.lobbyName = null;
-		socket.data.roomName = null;
+		socket.data.name = null;
 		socket.data.currentWorldRoomName = null;
 		socket.data.inventory = [];
-		socket.data.name = null;
-		if (callback) {
-			callback(true, "Left lobby successfully.");
-		}
+		
+		
+		callback?.(true, "Left lobby successfully.");
 	});
 
 	socket.on("directMessage", async function(targetUser, text) {

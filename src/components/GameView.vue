@@ -13,12 +13,17 @@ export default {
 			inputText: "",
 			chatHistory: [],
 			userList: [],
+			maxPlayers: 4,
+			showOffline: false,
 
 			username: null,
 			requestedUsername: "",
+			lobbyName : null,
 			requestedLobbyName: "",
 
-			historyLimit: 200
+			historyLimit: 200,
+
+			debugFakeReconnecting: true
 		};
 	},
 	methods: {
@@ -109,8 +114,11 @@ export default {
 
 				this.username = username;
 				localStorage.setItem("mud_last_username", username);
+				this.lobbyName = lobbyName;
+				localStorage.setItem("mud_last_lobby", lobbyName);
 
 				if (payload?.token) localStorage.setItem(`mud_token:${username}`, payload.token);
+				if (payload?.maxPlayers) this.maxPlayers = payload.maxPlayers;
 				this.requestHistory();
 			});
 
@@ -126,6 +134,7 @@ export default {
 				this.userList = [];
 
 				localStorage.removeItem("mud_last_username");
+				localStorage.removeItem("mud_last_lobby");
 
 				this.username = null;
 				this.requestedUsername = "";
@@ -140,15 +149,24 @@ export default {
 		});
 		socket.on("updateUserList", (userList) => {
 			this.userList = userList || [];
+
+			if (this.debugFakeReconnecting) {
+				this.userList.push({
+					name: "debug",
+					status: "reconnecting"
+				})
+			}
 		});
 		socket.on("connect", () => {
 			const username = localStorage.getItem("mud_last_username");
+			const lobbyName = localStorage.getItem("mud_last_lobby");
 			const token = localStorage.getItem(`mud_token:${username}`);
 			if (!username || !token) return;
 
 			socket.emit("reconnectUser", username, token, (ok, msg) => {
 				if (!ok) return;
 				this.username = username;
+				this.lobbyName = lobbyName;
 
 				this.requestHistory();
 			});
@@ -173,48 +191,87 @@ export default {
 		// socket.on('event', (msg, type = '') => {
 		// 	this.addChatHistory(msg, type);
 		// })
+	},
+	computed: {
+		onlineCount(){
+			return (this.userList || []).filter(u=>u.status === "online"|| u.status ==="reconnecting").length;
+		},
+		offlineCount(){
+			return (this.userList || []).filter(u=>u.status==="offline").length;
+		}
 	}
 }
 </script>
 <template>
-	<div class="top-bar">
-		<button v-if="username" @click="leaveLobby">Logout</button>
-	</div>
-    <div id="container">
-      	<div id="chat" ref="chatBox">
-        	<template v-for="(chat, idx) of chatHistory" :key="idx">
-				<p :class="[
-					'chat-line',
-					chat.type === 'system' ? 'text-user' : 
-					chat.type === 'chat' ? 'text-message' : 
-					chat.type === 'whisper' ? 'text-message' :
-					chat.type === 'command' ? 'text-command' : ''
-				]">
-					{{ chat.text }}
-				</p>
-			</template>
-      	</div>
-		<div id="userList">
-			<p class="clickable" @click="directMessage(index)" v-for="(user, index) of userList">{{user.name}} - {{user.room}}<br></p>
+	<div id="app">
+		<div  id="online">
+			<div class="top-bar">
+				<div id="top-spacer"></div>
+				<p id="lobbyName">=== {{ lobbyName }} ===</p>
+				<button id="logout" v-if="username" @click="leaveLobby">Logout</button>
+			</div>
+			<div id="container">
+				<div id="chat" ref="chatBox">
+					<template v-for="(chat, idx) of chatHistory" :key="idx">
+						<p :class="[
+							'chat-line',
+							chat.type === 'system' ? 'text-user' : 
+							chat.type === 'chat' ? 'text-message' : 
+							chat.type === 'whisper' ? 'text-message' :
+							chat.type === 'command' ? 'text-command' : ''
+						]">
+							{{ chat.text }}
+						</p>
+					</template>
+				</div>
+				<div id="userList">
+					<p id="playersCount">Online ({{onlineCount}}/{{ maxPlayers }})</p>
+					<hr>
+					<template v-for="(user, index) of userList" :key="user.name">
+						<p @click="directMessage(index)" v-if="user.name === username" class="clickable me">
+							▶ {{user.name}} - {{user.room}}
+						</p>
+					</template>
+					<template v-for="(user, index) of userList" :key="user.name">
+						<p @click="directMessage(index)" v-if="user.name !== username && user.status==='online'" class="clickable online">
+							{{user.name}} - {{user.room}}
+						</p>
+					</template>
+					<template v-for="(user, index) of userList" :key="user.name">
+						<p @click="directMessage(index)" v-if="user.status==='reconnecting'" class="clickable reconnecting">
+							{{user.name}} - (reconnecting)
+						</p>
+					</template>
+					<br>
+					<div class="offline-toggle clickable" @click="showOffline =!showOffline" > 
+						{{showOffline?'Hide':'Show'}} offline({{ offlineCount }})
+					</div>
+					<template v-for="(user, index) of userList" :key="user.name">
+						<p @click="directMessage(index)" v-if="user.status === 'offline' && showOffline" class="clickable offline">
+							{{user.name}} - (offline)
+						</p>
+					</template>
+				</div>
+			</div>
+
+			<form
+				id="controls"
+				autocomplete="off"
+				@submit.prevent="sendText"
+			>
+				<input id="inputText" type="text" v-model="inputText"/>
+				<button id="sendButton" type="submit">Submit</button>
+			</form>
+			</div>
+
+		<div v-if="!username" id="offline" class="overlay" style="position: absolute; inset: 0;">
+			<p>Enter a username</p>
+			<input v-model="requestedUsername" type="text">
+			<p>Enter a lobby name to join or create new one</p>
+			<input v-model="requestedLobbyName" type="text"></input>
+			<br></br>
+			<button @click="joinLobby">Submit</button>
 		</div>
-    </div>
-
-	<form
-		id="controls"
-		autocomplete="off"
-		@submit.prevent="sendText"
-	>
-		<input id="inputText" type="text" v-model="inputText"/>
-		<button id="sendButton" type="submit">Submit</button>
-	</form>
-
-	<div v-if="username==null" class="overlay" style="position: absolute; inset: 0;">
-		<p>Enter a username</p>
-		<input v-model="requestedUsername" type="text">
-		<p>Enter a lobby name to join or create new one</p>
-		<input v-model="requestedLobbyName" type="text"></input>
-		<br></br>
-		<button @click="joinLobby">Submit</button>
 	</div>
 </template>
 
