@@ -31,13 +31,19 @@ export default {
 			if (e.type === "command"){
 				const cmdLine = e.command ? `> ${e.command}` : "> (command)";
 				const respLine = e.response ?? "";
-				this.chatHistory.push({ text: `${cmdLine}\n${respLine}`, type: "command" });
+
+				if (e.command === 'join') this.chatHistory.push({text: respLine, type: "command"});
+				else this.chatHistory.push({ text: `${cmdLine}\n${respLine}`, type: "command" });
         		return;
 			}
 
 			if (e.type === "whisper"){
 				const label = (e.from === this.username) ? `[TO: ${e.to}]` : `[FROM: ${e.from}]`;
-				this.chatHistory.push({ text: `${label} ${e.text}`, type: "whisper" });
+				if (e.from===e.to) {
+					this.chatHistory.push({ text: `[FROM: ${e.from}] ${e.text}`, type: "whisper" });
+					this.chatHistory.push({ text: `[TO: ${e.to}] ${e.text}`, type: "whisper" });
+				}
+				else this.chatHistory.push({ text: `${label} ${e.text}`, type: "whisper" });
         		return;
 			}
 
@@ -107,6 +113,8 @@ export default {
 				if (payload?.token) localStorage.setItem(`mud_token:${username}`, payload.token);
 				this.requestHistory();
 			});
+
+			
 			
 		},
 		leaveLobby(){

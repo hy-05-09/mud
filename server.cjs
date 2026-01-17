@@ -63,7 +63,7 @@ async function setExitLockState(socket, eventObject, actingItem, itemToBeUnlocke
     const roomName = socket.data.currentWorldRoomName;
 
     // Load full lobby fresh from DB
-    const lobby = await db.collection("lobbies").findOne({ lobbyName });
+	const lobby = await getLobbyFromDB(lobbyName);
     if (!lobby) return "Lobby not found.";
 
     let currentRoom = lobby.gameRooms.find(r => r.name === roomName);
@@ -97,10 +97,7 @@ async function setExitLockState(socket, eventObject, actingItem, itemToBeUnlocke
 	
 
     // Save FULL updated rooms back into DB
-    await db.collection("lobbies").updateOne(
-        { lobbyName },
-        { $set: { gameRooms: lobby.gameRooms } }
-    );
+    await updateLobby(lobbyName, {$set: { gameRooms: lobby.gameRooms }});
 
 	return response;
 }
@@ -123,12 +120,11 @@ const interactableFunctions = {
 	lockExit: (socket, eventObject, actingItem, itemToBeActedOn) => {
 		return setExitLockState(socket, eventObject, actingItem, itemToBeActedOn, true);
 	},
-
 	toggleLockExit: async (socket, eventObject, actingItem, itemToBeActedOn) => {
 		const lobbyName = socket.data.lobbyName;
 		const roomName = socket.data.currentWorldRoomName;
 
-		const lobby = await db.collection("lobbies").findOne({ lobbyName });
+		const lobby = await getLobbyFromDB(lobbyName);
 		if (!lobby) return "Lobby not found.";
 
 		const currentRoom = lobby.gameRooms.find(r => r.name === roomName);
@@ -1031,7 +1027,7 @@ async function insertLog(entry){
  */
 
 /** Emit a saved log entry to everyone in lobby */
-async function emitLobbyLog(lobbyName, entry){
+async function emitLobbyLog(lobbyName, entry, opts={}){
 	const saved = await insertLog({
 		lobbyName,
 		type: entry.type ?? "system",
@@ -1039,17 +1035,15 @@ async function emitLobbyLog(lobbyName, entry){
 		from: entry.from ?? "SYSTEM",
 		...entry
 		});
-	io.to(lobbyName).emit("logEntry", saved);
+
+	if (opts.excludeSocket) opts.excludeSocket.to(lobbyName).emit("logEntry", saved);
+	else io.to(lobbyName).emit("logEntry", saved);
 	return saved;
 }
 
 /** Emit a saved log entry to everyone in lobby */
-async function emitSystem(lobbyName, text){
-	return emitLobbyLog(lobbyName, {
-		type: "system",
-		from: "SYSTEM",
-		text
-	});
+async function emitSystem(lobbyName, text, opts){
+	return emitLobbyLog(lobbyName, {type: "system", from: "SYSTEM", text}, opts);
 }
 
 /**
@@ -1086,7 +1080,7 @@ async function emitWhisper(socket, lobbyName, from, to, text){
 	const targetUser = await getUserFromDB(to);
 	const targetSocket = targetUser?.socketId ? io.sockets.sockets.get(targetUser.socketId) : null;
 
-	if (targetSocket?.connected) targetSocket.emit("logEntry", saved);
+	if (targetSocket?.connected && from !== to) targetSocket.emit("logEntry", saved);
 	
 	return saved;
 }
@@ -1175,7 +1169,7 @@ io.on("connection", async function(socket) {
 		await updateRoomStates(lobbyName, {$pull: {players: username}});
 
 		// io.to(lobbyName).emit("userLeftLobby", username);
-		await emitSystem(lobbyName, `${username} joined the game.`);
+		await emitSystem(lobbyName, `${username} left the game.`);
 		await emitUserList(lobbyName);
 
 		socket.data.lobbyName = null;
@@ -1237,93 +1231,98 @@ io.on("connection", async function(socket) {
 
 		let response = '';
 		const username = socket.data.name;
-		// const lobbyName = socket.data.lobbyName;
+		const lobbyName = socket.data.lobbyName;
 
 		let user = await getUserFromDB(username);
 		if (!user) return "User not found.";
 
-		const freshUser = await db.collection("users").findOne({ username });
-        if (!freshUser) return "User not found.";
+		let lobby = await getLobbyFromDB(lobbyName);
+		if (!lobby) return "Lobby not found.";
 
-        const freshLobby = await db.collection("lobbies").findOne({ lobbyName: freshUser.lobbyName });
-        if (!freshLobby) return "Lobby not found.";
-
-       const gameRoom = freshLobby.gameRooms.find(r => r.name === freshUser.currentWorldRoomName);
-       if (!gameRoom) return "Room not found.";
+		const roomName = user.currentWorldRoomName;
+       	const gameRoom = lobby.gameRooms.find(r => r.name === roomName);
+       	if (!gameRoom) return "Room not found.";
 
 
 		// Split the command by spaces into an array
 		let words = command.split(" ");
 		let unmodifiedWords = words;
 		words = words.map(word => word.toLowerCase());
+
 		let verb = '';
 		let verbIndex = 0;
+
 		let objectStartIndex = -1; // For game items that have names with spaces
 		let objectEndIndex = -1;
+		
 		let secondaryObjectStartIndex = -1; // The secondary object's end index would just be the length of the array minus one. (from the start index to the end of the array)
 		let preposition = '';
 
 		// This is the parsing loop
-		let index = 0;
-		for (word of words) {
+		// let index = 0;
+		for (let i = 0; i < words.length; i++) {
+			const word = words[i];
+
 			if (prepositions.includes(word)) {
 				if (verb === 'look' && word === 'at' && objectStartIndex === -1) {
 					verb = "look at";
+					continue;
 				}
-				else if (verb === '') {
+				if (verb === '') {
 					// socket.emit('commandResponse', 'Your command must contain a verb.');
-					await emitCommand(socket, freshLobby, freshUser, command, 'Your command must contain a verb.');
+					await emitCommand(socket, lobbyName, username, command, 'Your command must contain a verb.');
 					return;
 				}
-				else if (preposition === '') {
-					if (objectStartIndex !== -1) {
-						preposition = word;
-						objectEndIndex = index - 1;
-						if (word === 'out' && ['of', 'from'].includes(words[index + 1])) {
-							preposition += " " + words[index + 1];
-							index += 1;
-						}
-						if (articles.includes(words[index + 1]))
-							// If there is an article, skip to the next index
-							secondaryObjectStartIndex = index + 2;
-						else
-							secondaryObjectStartIndex = index + 1;
-					} else {
-						// socket.emit('commandResponse', verb + " " + word + " what?");
-						await emitCommand(socket, freshLobby, freshUser, command, verb + " " + word + " what?");
-						return;
-					}
+				if (preposition !== ''){
+					await emitCommand(socket, lobbyName, username, command, 'There is more than one preposition in that sentence.');
+					return;
+				}
+				if (objectStartIndex === -1){
+					await emitCommand(socket, lobbyName, username, command, verb + " " + word + " what?");
+					return;
+				}
+
+				preposition = word;
+				objectEndIndex = index - 1;
+
+				if (word === 'out' && words.length && ['of', 'from'].includes(words[index + 1])) {
+					preposition += " " + words[index + 1];
+					i++
+				}
+
+				if (i+1 < words.length && articles.includes(words[i+1])){
+					secondaryObjectStartIndex = index + 2;
 				} else {
-					// socket.emit('commandResponse', 'There is more than one preposition in that sentence.');
-					await emitCommand(socket, freshLobby, freshUser, command, 'There is more than one preposition in that sentence.');
-					return;
+					secondaryObjectStartIndex = index + 1;
 				}
+
+				continue;
 			}
-			else if (verbs.includes(word)) {
+			if (verbs.includes(word)) {
 				if (verb === '') {
 					verb = word;
-					verbIndex = index;
-				} else if (['say', 'speak', 'talk'].includes(verb)) {
-					// Do nothing
-				} else {
-					// socket.emit('commandResponse', 'There is more than one verb in that sentence.');
-					await emitCommand(socket, freshLobby, freshUser, command, 'There is more than one verb in that sentence.');
-					return;
-				}
+					verbIndex = i;
+					continue;
+				} 
+				if (['say', 'speak', 'talk'].includes(verb)) {
+					continue;
+				} 
+				// socket.emit('commandResponse', 'There is more than one verb in that sentence.');
+				await emitCommand(socket, lobbyName, username, command, 'There is more than one verb in that sentence.');
+				return;
 			}
-			else if (verb !== '' && !articles.includes(word)) {
+			if (verb !== '' && !articles.includes(word)) {
 				if (objectStartIndex === -1) {
-					objectStartIndex = index;
+					objectStartIndex = i;
 				} else if (preposition === '') {
-					objectEndIndex = index;
+					objectEndIndex = i;
 				}
 			}
-			index += 1;
 		}
 
 		//alpha server 1
-		// let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
-		// let secondaryObjectName = getObjectNameFromIndices(words, secondaryObjectStartIndex, words.length - 1);
+		let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
+		let secondaryObjectName = getObjectNameFromIndices(words, secondaryObjectStartIndex, words.length - 1);
 		// let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
 		// let gameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
 		// let response = '';
@@ -1356,123 +1355,125 @@ io.on("connection", async function(socket) {
 			if (map[verb]) verb = map[verb];
 
 			// 1. ALWAYS load fresh user from DB
-			const freshUser = await db.collection("users").findOne({ username });
-			if (!freshUser) return "User not found.";
+			// const freshUser = await db.collection("users").findOne({ username });
+			// if (!freshUser) return "User not found.";
 
 			// 2. ALWAYS load fresh lobby from DB
-			const freshLobby = await db.collection("lobbies").findOne({ lobbyName: freshUser.lobbyName });
-			if (!freshLobby) return "Lobby not found.";
+			// const freshLobby = await db.collection("lobbies").findOne({ lobbyName: freshUser.lobbyName });
+			// if (!freshLobby) return "Lobby not found.";
 
 			// 3. Get the fresh room data
-			const gameRoom = freshLobby.gameRooms.find(r => r.name === freshUser.currentWorldRoomName);
-			if (!gameRoom) return "Room not found.";
+			// const gameRoom = freshLobby.gameRooms.find(r => r.name === freshUser.currentWorldRoomName);
+			// if (!gameRoom) return "Room not found.";
 
 			// 4. Now get the correct exit
 			let exit = gameRoom.exits.find(ex => ex.direction === verb);
-			if (!exit) return "There is no exit in that direction.";
+			if (!exit) response = "There is no exit in that direction.";
 
-			if (exit.isLocked) return "It's locked.";
+			else if (exit.isLocked) response = "It's locked.";
 
-			const destinationRoom = freshLobby.gameRooms.find(r => r.name === exit.destination);
+			const destinationRoom = lobby.gameRooms.find(r => r.name === exit.destination);
 			if (!destinationRoom) return "Destination room not found.";
 
 			// 5. Update user position in DB
-			await updateUser(username, { $set: {currentWorldRoomName: exit.destination}});
+			else {
+				await updateUser(username, { $set: {currentWorldRoomName: exit.destination}});
+				socket.data.currentWorldRoomName = exit.destination;
 
-// 			await db.collection("lobbies").updateOne(
-// 			{ lobbyName: freshLobby.lobbyName },   
-// 			{ $set: { gameRooms: freshLobby.gameRooms } }
-// );
-
-			socket.data.currentWorldRoomName = exit.destination;
-
-			// 6. Rebuild user list and broadcast
-			const socketsInLobby = await io.in(freshUser.lobbyName).fetchSockets();
-			let userList = [];
-
-			for (let s of socketsInLobby) {
-				const u = await db.collection("users").findOne({ username: s.data.name });
-				if (u) userList.push({ name: u.username, room: u.currentWorldRoomName });
+				// io.to(freshUser.lobbyName).emit("updateUserList", userList);
+				await emitUserList(lobbyName);
+				response =  getRoomDescription(destinationRoom);
 			}
-
-			// io.to(freshUser.lobbyName).emit("updateUserList", userList);
-			await emitUserList(freshUser.lobbyName);
-
-			return getRoomDescription(destinationRoom);
+			
+			// 			await db.collection("lobbies").updateOne(
+			// 			{ lobbyName: freshLobby.lobbyName },   
+			// 			{ $set: { gameRooms: freshLobby.gameRooms } }
+			// );
+			// 6. Rebuild user list and broadcast
 		}
 		else if (['inventory', 'i', 'inv'].includes(verb)) {
 			// socket.emit('commandResponse',
 			// 	"You are carrying: " + (socket.data.inventory.length ? socket.data.inventory.map(item => item?.name).join(", ") : 'nothing')
 			// );
-			await emitCommand(socket, freshLobby, freshUser, command, 
-				"You are carrying: " + (socket.data.inventory.length ? socket.data.inventory.map(item => item?.name).join(", ") : 'nothing')
-			);
+			response = "You are carrying: " + (socket.data.inventory.length ? socket.data.inventory.map(item => item?.name).join(", ") : 'nothing');
+			// await emitCommand(socket, freshLobby, freshUser, command, 
+			// 	"You are carrying: " + (socket.data.inventory.length ? socket.data.inventory.map(item => item?.name).join(", ") : 'nothing')
+			// );
 		}
 		else if (['get', 'take', 'grab'].includes(verb)) {
 			if (objectName !== '') {
-				let itemToTakeIndex = gameRoom.interactables.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
-				if (itemToTakeIndex != -1) {
-					if (gameRoom.interactables[itemToTakeIndex].canGet) {
-						// Remove the item from the gameRoom
-						let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
-						// Push the item to the player's inventory
-						socket.data.inventory.push(takenItem);
+				// let itemToTakeIndex = gameRoom.interactables.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+				// if (itemToTakeIndex != -1) {
+				// 	if (gameRoom.interactables[itemToTakeIndex].canGet) {
+				// 		// Remove the item from the gameRoom
+				// 		let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
+				// 		// Push the item to the player's inventory
+				// 		socket.data.inventory.push(takenItem);
 
-						await updateUser(username, {$set:{inventory: socket.data.inventory}});
+				// 		await updateUser(username, {$set:{inventory: socket.data.inventory}});
 
-						response = "You took the " + takenItem.name;
-						// Remove the positionalPhrase from the item
-						takenItem.positionalPhrase = '';
-						// for (user of await getSocketsInGameRoom(gameRoom)) {
-						// 	socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
-						// }
-						io.to(freshLobby.lobbyName).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+				// 		response = "You took the " + takenItem.name;
+				// 		// Remove the positionalPhrase from the item
+				// 		takenItem.positionalPhrase = '';
+				// 		// for (user of await getSocketsInGameRoom(gameRoom)) {
+				// 		// 	socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+				// 		// }
+				// 		io.to(freshLobby.lobbyName).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
 						
-						await updateLobby(freshLobby.lobbyName, { $set:{gameRooms: freshLobby.gameRooms}});
-					} else response = "You can't take that!";
-				} else response = "There doesn't seem to be one of those here.";
+				// 		await updateLobby(freshLobby.lobbyName, { $set:{gameRooms: freshLobby.gameRooms}});
+				// 	} else response = "You can't take that!";
+				// } else response = "There doesn't seem to be one of those here.";
 				//alpha server n.2
-				// if (preposition !== '') {
-				// 	let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
-				// 	if (container) {
-				// 		let itemToTakeIndex = container?.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
-				// 		if (itemToTakeIndex != -1) {
-				// 			if (container.inventory[itemToTakeIndex].canGet) {
-				// 				// Remove the item from the gameRoom
-				// 				let takenItem = container.inventory.splice(itemToTakeIndex, 1)[0];
-				// 				// Push the item to the player's inventory
-				// 				socket.data.inventory.push(takenItem);
-				// 				response = "You took the " + takenItem.name;
-				// 				// Remove the positionalPhrase from the item
-				// 				takenItem.positionalPhrase = ''
-				// 				if (takenItem.name == 'Alien Heart') {
-				// 					io.to(socket.data.lobbyName).emit('event', socket.data.name + " has discovered the " + takenItem.name + ". They have won the game!", 'user');
-				// 				}
-				// 				for (user of await getSocketsInGameRoom(gameRoom)) {
-				// 					socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
-				// 				}
-				// 			} else response = "You can't take the " + objectName + "!";
-				// 		} else response = "The " + secondaryObjectName + " doesn't contain \"" + objectName + "\".";
-				// 	} else
-				// 		response = "From what?";
-				// }
-				// else {
-				// 	let itemToTakeIndex = gameRoom.interactables.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
-				// 	if (itemToTakeIndex != -1) {
-				// 		if (gameRoom.interactables[itemToTakeIndex].canGet) {
-				// 			// Remove the item from the gameRoom
-				// 			let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
-				// 			// Push the item to the player's inventory
-				// 			socket.data.inventory.push(takenItem);
-				// 			response = "You took the " + takenItem.name;
-				// 			// Remove the positionalPhrase from the item
-				// 			takenItem.positionalPhrase = '';
-				// 			for (user of await getSocketsInGameRoom(gameRoom)) {
-				// 				socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
-				// 			}
-				// 		} else response = "You can't take the " + objectName + "!";
-				// 	} else response = "There doesn't seem to be \"" + objectName + "\" here.";
-				// }
+				if (preposition !== '') {
+					let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
+					if (container) {
+						let itemToTakeIndex = container?.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+						if (itemToTakeIndex != -1) {
+							if (container.inventory[itemToTakeIndex].canGet) {
+								// Remove the item from the gameRoom
+								let takenItem = container.inventory.splice(itemToTakeIndex, 1)[0];
+								// Push the item to the player's inventory
+								socket.data.inventory.push(takenItem);
+								await updateUser(username, {$set:{inventory: socket.data.inventory}});
+								response = "You took the " + takenItem.name;
+								// Remove the positionalPhrase from the item
+								takenItem.positionalPhrase = ''
+								if (takenItem.name == 'Alien Heart') {
+									// io.to(socket.data.lobbyName).emit('event', socket.data.name + " has discovered the " + takenItem.name + ". They have won the game!", 'user');
+									await emitSystem(lobbyName, `${username} has discovered the ${takenItem.name}. They have won the game!`, 
+										{excludeSocket:socket});
+								}
+								// for (user of await getSocketsInGameRoom(gameRoom)) {
+								// 	socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+								// }
+								await emitSystem(lobbyName, `${username} just took the ${takenItem.name}.`, {excludeSocket:socket});
+								await updateLobby(lobbyName, { $set:{gameRooms: lobby.gameRooms}});
+							} else response = "You can't take the " + objectName + "!";
+						} else response = "The " + secondaryObjectName + " doesn't contain \"" + objectName + "\".";
+					} else
+						response = "From what?";
+				}
+				else {
+					let itemToTakeIndex = gameRoom.interactables.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+					if (itemToTakeIndex != -1) {
+						if (gameRoom.interactables[itemToTakeIndex].canGet) {
+							// Remove the item from the gameRoom
+							let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
+							// Push the item to the player's inventory
+							socket.data.inventory.push(takenItem);
+							await updateUser(username, {$set:{inventory: socket.data.inventory}});
+							response = "You took the " + takenItem.name;
+							// Remove the positionalPhrase from the item
+							takenItem.positionalPhrase = '';
+							// for (user of await getSocketsInGameRoom(gameRoom)) {
+							// 	socket.to(user.id).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+							// }
+							// io.to(lobbyName).emit('event', socket.data.name + " just took the " + takenItem.name, 'user');
+							await emitSystem(lobbyName, `${username} just took the ${takenItem.name}.`, {excludeSocket:socket});
+							await updateLobby(lobbyName, { $set:{gameRooms: lobby.gameRooms}});
+						} else response = "You can't take the " + objectName + "!";
+					} else response = "There doesn't seem to be \"" + objectName + "\" here.";
+				}
 			}
 			else response = verb + " what?";
 		}
@@ -1487,37 +1488,41 @@ io.on("connection", async function(socket) {
 					gameRoom.interactables.push(droppedItem);
 
 					await updateUser(username, {$set: {inventory: socket.data.inventory}});
+					await emitSystem(lobbyName, `${username} just dropped ${takenItem.name}.`, {excludeSocket:socket});
+					await updateLobby(lobbyName, { $set:{gameRooms: lobby.gameRooms}});
 					response = "You dropped the " + droppedItem.name + " on the ground.";
-					droppedItem.positionalPhrase = " on the ground."
-					for (user of await getSocketsInGameRoom(gameRoom)) {
-						socket.to(user.id).emit('event', socket.data.name + " just dropped " + droppedItem.name, 'user');
-					}
-
-					await updateLobby(lobbyName, { $set:{gameRooms: freshLobby.gameRooms}});
+					droppedItem.positionalPhrase = " on the ground.";
+					// for (user of await getSocketsInGameRoom(gameRoom)) {
+					// 	socket.to(user.id).emit('event', socket.data.name + " just dropped " + droppedItem.name, 'user');
+					// }
+					
 					//alpha server n.3
-		// 		} else response = "You don't seem to be carrying \"" + objectName + "\"";
-		// 	}
-		// 	else response = verb + " what?";
-		// }
-		// else if (['put', 'place'].includes(verb)) {
-		// 	if (objectName !== '') {
-		// 		// Find the index of the item to drop
-		// 		let itemToPlaceIndex = socket.data.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
-		// 		// TODO: make it so you can 'place' items from the room and not just from your inventory, and also be able to put items from inventory/room into items that are in your inventory such as putting something into a bottle.
-		// 		let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
-		// 		if (itemToPlaceIndex != -1) {
-		// 			if (container) {
-		// 				if (container.inventory) {
-		// 					// Remove the item from the player's inventory
-		// 					let placedItem = socket.data.inventory.splice(itemToPlaceIndex, 1)[0];
-		// 					// Push the item to the container
-		// 					container.inventory.push(placedItem);
-		// 					response = "You put the " + placedItem.name + " in the " + container.name;
-		// 					for (user of await getSocketsInGameRoom(gameRoom)) {
-		// 						socket.to(user.id).emit('event', socket.data.name + " just put " + placedItem.name + ' in the ' + container.name, 'user');
-		// 					}
-		// 				} else response = secondaryObjectName + " doesn't seem to be a container";
-		// 			} else response = "There doesn't seem to be a " + secondaryObjectName + " here.";
+				} else response = "You don't seem to be carrying \"" + objectName + "\".";
+			}
+			else response = verb + " what?";
+		}
+		else if (['put', 'place'].includes(verb)) {
+			if (objectName !== '') {
+				// Find the index of the item to drop
+				let itemToPlaceIndex = socket.data.inventory.findIndex(item => item.name === objectName || item.altNames?.includes(objectName));
+				// TODO: make it so you can 'place' items from the room and not just from your inventory, and also be able to put items from inventory/room into items that are in your inventory such as putting something into a bottle.
+				let container = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
+				if (itemToPlaceIndex != -1) {
+					if (container) {
+						if (container.inventory) {
+							// Remove the item from the player's inventory
+							let placedItem = socket.data.inventory.splice(itemToPlaceIndex, 1)[0];
+							// Push the item to the container
+							container.inventory.push(placedItem);
+							await updateUser(username, {$set: {inventory: socket.data.inventory}});
+							await emitSystem(lobbyName, `${username} just put ${takenItem.name} in the ${container.name}.`, {excludeSocket:socket});
+							await updateLobby(lobbyName, { $set:{gameRooms: lobby.gameRooms}});
+							response = "You put the " + placedItem.name + " in the " + container.name;
+							// for (user of await getSocketsInGameRoom(gameRoom)) {
+							// 	socket.to(user.id).emit('event', socket.data.name + " just put " + placedItem.name + ' in the ' + container.name, 'user');
+							// }
+						} else response = secondaryObjectName + " doesn't seem to be a container";
+					} else response = "There doesn't seem to be a " + secondaryObjectName + " here.";
 				} else response = "You don't seem to be carrying that.";
 			}
 			else response = verb + " what?";
@@ -1536,25 +1541,20 @@ io.on("connection", async function(socket) {
 					let secondaryItem = socket.data.inventory.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
 					if (!secondaryItem) // if it doesn't exist in the inventory, look for it in the room.
 						secondaryItem = gameRoom.interactables.find(item => item.name === secondaryObjectName || item.altNames?.includes(secondaryObjectName));
-					if (!secondaryItem && secondaryObjectName === "door") {
-						// Find exit in this room that leads somewhere
-						// let exit = gameRoom.exits?.find(e => e.isLocked !== undefined);
-						let exit = gameRoom.exits?.find(e=>e.isLocked !== undefined);
-						if (exit) {
-							// Create a pseudo-item representing the door.
-							secondaryItem = {
-								name: "door",
-								isExitObject: true,
-								neededKeyId: "old-room-key",    // key required
-								_exitTarget: exit.destination   // store where it leads
-							};
-						}
-					}
-
 					if (secondaryItem) {
 						let events = secondaryItem.actions?.find(action => action.commands.includes(verb))?.events;
 						let eventResponses = [];
-						
+						if (events) {
+							for (eventObject of events) {
+								let actingItem = itemToUse;
+								let itemToBeActedOn = secondaryItem;
+								let eventResponse = await interactableFunctions[eventObject.name](socket, eventObject, actingItem, itemToBeActedOn);
+								if (eventResponse !== undefined && eventResponse !== '')
+									eventResponses.push(eventResponse);
+							}
+							response = eventResponses.join(' ');
+						}
+						else response = "Nothing happens.";
 					} else if (preposition)
 						response = "Use the " + objectName + " on what?";
 					else
@@ -1565,10 +1565,10 @@ io.on("connection", async function(socket) {
 		}
 		else if (['say', 'speak', 'talk'].includes(verb)) {
 			let quote = unmodifiedWords.slice(verbIndex + 1).join(' ');
-			let m = socket.data.name + " says \"" + quote + "\"";
+			// let m = socket.data.name + " says \"" + quote + "\"";
 			// socket.to(socket.data.lobbyName).emit("messageSent", m);
-			await emitChat(lobbyName, username, quote);
-			response = "You said \"" + quote + "\"";
+			await emitChat({lobbyName, from:username, text:quote});
+			// response = "You said \"" + quote + "\"";
 			// TODO: make the players only able to talk to the players in the same game world room?
 		}
 		else if (verb !== '') {
@@ -1583,7 +1583,7 @@ io.on("connection", async function(socket) {
 				let events = primaryItem.actions?.find(action => action.commands.includes(verb))?.events;
 				let eventResponses = [];
 				if (events) {
-					for (eventObject of events) {
+					for (const eventObject of events) {
 						let actingItem;
 						if (secondaryItem)
 							actingItem = secondaryItem;
@@ -1599,20 +1599,18 @@ io.on("connection", async function(socket) {
 				}
 				if (eventResponses.length){
 					response = eventResponses.join(' ');
-					
 				}
 				
 				else
 					response = "It seems you can't " + verb + " the " + objectName
 					+ (secondaryItem ? (' with the ' + secondaryItem.name + '.') : '.');
 			}
-			else response = "I don't know what \"" + objectName + "\" is in this context.";
+			else response =`${verb} what?`;
 		}
 		else response = "I didn't understand that.";
 
-		if (response != '')
+		if (response != '') await emitCommand(socket, lobbyName, username, command, response);
 			// socket.emit('commandResponse', response);
-		await emitCommand(socket, freshLobby, freshUser, command, response);
 		// await logCommand(socket.data.lobbyName, username, command, response);
 	}
 
@@ -1701,6 +1699,11 @@ io.on("connection", async function(socket) {
 		await emitSystem(lobbyName, `${username} joined the game.`);
 		await emitUserList(lobbyName);
 
+		const lobbyFresh = await getLobbyFromDB(lobbyName);
+		const room = lobbyFresh.gameRooms.find(r => r.name === socket.data.currentWorldRoomName);
+		const desc = room ? getRoomDescription(room) : "Room not found.";
+		await emitCommand(socket, lobbyName, username, "join", desc);
+
 		callback(true, "logged in", {token});
 	});
 
@@ -1722,58 +1725,59 @@ io.on("connection", async function(socket) {
 	});
 
 	socket.on("directMessage", async function(targetUser, text) {
-		const fromUser = socket.data.name;
-		const fromLobby = socket.data.lobbyName;
+		const fromUsername = socket.data.name;
+		const fromLobbyName = socket.data.lobbyName;
 
-		if (!fromUser || !fromLobby){
+		if (!fromUsername || !fromLobbyName){
 			// socket.emit("messageSent", "You are not in a lobby.");
-			await emitCommand(socket, null, fromUser ?? "UNKNOWN", "whisper", "You are not in a lobby.");
+			await emitCommand(socket, null, fromUsername ?? "UNKNOWN", "whisper", "You are not in a lobby.");
 			return;
 		}
 
 		const targetName = targetUser?.name;
 		if (!targetName) {
 			// socket.emit("messageSent", "Invalid target user.");
-			await emitCommand(socket, fromLobby, fromUser, "whisper", "Invalid target user.");
+			await emitCommand(socket, fromLobbyName, fromUsername, "whisper", "Invalid target user.");
 			return;
 		}
 
 		const target = await getUserFromDB(targetName);
 		if (!target) {
 			// socket.emit("messageSent", `User ${targetName} not found.`);
-			await emitCommand(socket, fromLobby, fromUser, "whisper", `User ${targetName} not found.`)
+			await emitCommand(socket, fromLobbyName, fromUsername, "whisper", `User ${targetName} not found.`)
 			return;
 		}
 
-		if (target.lobbyName !== fromLobby) {
+		if (target.lobbyName !== fromLobbyName) {
 			// socket.emit("messageSent", `User ${targetName} is not in your lobby.`);
-			await emitCommand(socket, fromLobby, fromUser, "whisper", `User ${targetName} is not in your lobby.`);
+			await emitCommand(socket, fromLobbyName, fromUsername, "whisper", `User ${targetName} is not in your lobby.`);
 			return;
 		}
 
 		const targetSocket = target.socketId ? io.sockets.sockets.get(target.socketId) : null;
 		if (!targetSocket || !targetSocket.connected) {
 			// socket.emit("messageSent", `User ${targetName} is offline.`);
-			await emitCommand(socket, fromLobby, fromUser, "whisper", `User ${targetName} is offline.`);
+			await emitCommand(socket, fromLobbyName, fromUsername, "whisper", `User ${targetName} is offline.`);
 			return;
 		}
 
 		// const msg = `${fromUser} whispered to ${targetName}: ${text}`;
 		// targetSocket.emit("messageSent", msg);
 		// socket.emit("messageSent", msg);
-		await emitWhisper(socket, fromLobby, fromUser, targetName, text);
+		await emitWhisper(socket, fromLobbyName, fromUsername, targetName, text);
 	});
 
 
 	socket.on("sendCommand", async function(cmd, callback) {
 		try {
+			const username = socket.data.name;
 			const lobbyName = socket.data.lobbyName;
-			if (!lobbyName) return callback?.(false, "You are not in a lobby.");
+			if (!username || !lobbyName) return callback(false, "You are not in a lobby.", []);
 
 			// const response = `You typed: ${cmd}`;
 			const response = await parseCommand(cmd);
 			// if (response) socket.emit("commandResponse", response);
-			if (response) await emitCommand(socket, freshLobby, freshUser, command, response);
+			if (response) await emitCommand(socket, lobbyName, username, command, response);
 	
 			callback?.(true);
 		} catch (err) {
@@ -1785,7 +1789,7 @@ io.on("connection", async function(socket) {
 	socket.on("showChatHistory", async function(limit, callback){
 		const username = socket.data.name;
 		const lobbyName = socket.data.lobbyName;
-		if (!username || !lobbyName) return callback(false, "You are not in a lobby.", []);
+		if (!username || !lobbyName) return callback?.(false, "You are not in a lobby.", []);
 
 		const history = await fetchVisibleHistory({lobbyName, username, limit});
 		callback(true, history);
