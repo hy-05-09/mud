@@ -355,12 +355,11 @@ export default {
 			</div>
 
 		<div v-if="!username" id="offline" class="overlay" style="position: absolute; inset: 0;">
-			<p>Enter a username</p>
-			<input v-model="requestedUsername" type="text">
-			<p>Enter a lobby name to join or create new one</p>
-			<input v-model="requestedLobbyName" type="text"></input>
-			<br></br>
-			<button @click="joinLobby">Submit</button>
+			<FORM class="login-panel" @submit.prevent="joinLobby">
+				<input v-model="requestedUsername" type="text" placeholder="Username" autocomplete="username"/> <br> 
+				<input v-model="requestedLobbyName" type="text" placeholder="Lobby Name" autocomplete="off"/> <br> <br>
+				<button type="submit">Join</button>
+			</FORM>
 		</div>
 	</div>
 </template>

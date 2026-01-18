@@ -928,11 +928,12 @@ function randomFromList(list) {
 //-------User Collection-----------
 // create new user
 const crypto = require("crypto");
+const { count } = require("console");
 async function createUser({username, lobbyName, socketId}) {
 	const reconnectToken = crypto.randomBytes(32).toString("hex");
 	await db.collection("users").insertOne({
 			username,
-			status: "online",
+			status: "offline",
 			lastDisconnectAt: new Date(),
 			lastLeftAt: new Date(),
 			lobbyName,
@@ -1138,6 +1139,46 @@ async function fetchVisibleHistory({lobbyName, username, limit = 200}){
 	return logs.reverse();
 }
 
+function getReconnectCutoffMs(){
+	return Date.now() - 60_000;
+}
+
+async function countOcuupiedSlots(lobbyName){
+	const cutoff = new Date(getReconnectCutoffMs);
+
+	return db.collection("users").countDocuments({
+		lobbyName,
+		$or: [
+			{status: "online"},
+			{status: "reconnecting", lastDisconnectAt: {$gte: cutoff}}
+		]
+	});
+}
+
+function isReservedReconnectUser(user){
+	if (!user) return false;
+	if (user.status != "reconnecting") return false;
+	if (!user.lastDisconnectAt) return false;
+	return new Date(user.lastDisconnectAt).getTime >= getReconnectCutoffMs();
+}
+
+function startReconnectExpiryJob(){
+	setInterval(async () => {
+		try {
+			const cutoff = new Date(Date.now() - 60_000);
+			await db.collection("users").updateMany(
+				{
+					status: "reconnecting",
+					lastDisconnectAt: {$lt: cutoff},
+					socketId: null
+				},
+				{$set: {status:"offline", lastSeenAt: new Date()}}
+			);
+		} catch (e) {
+			console.error("expire reconnecting interval error:", e);
+		}
+	}, 10_000);
+}
 
 
 //Every time a client connects (visits the page) this function(socket) {...} gets executed.
@@ -1145,15 +1186,6 @@ async function fetchVisibleHistory({lobbyName, username, limit = 200}){
 io.on("connection", async function(socket) {
 
 	async function emitUserList(lobbyName) {
-		// const socketsInLobby = await io.in(lobbyName).fetchSockets();
-		// const userList = [];
-
-		// for (const s of socketsInLobby) {
-		// 	const u = await getUserFromDB(s.data.name)
-		// 	if (u) userList.push({ name: u.username, room: u.currentWorldRoomName });
-		// }
-		// io.to(lobbyName).emit("updateUserList", userList);
-
 		const lobby = await getLobbyFromDB(lobbyName);
 		if (!lobby) return;
 
@@ -1173,10 +1205,10 @@ io.on("connection", async function(socket) {
 			let status = "offline";
 			if (online) status = "online";
 			else {
-				const lastDic = u.lastDisconnectAt ? new Date(u.lastDisconnectAt).getTime : 0;
+				const lastDic = u.lastDisconnectAt ? new Date(u.lastDisconnectAt).getTime() : 0;
 				const lastLeft = u.lastLeftAt ? new Date(u.lastLeftAt).getTime : 0;
 
-				const leftRecently = lastLeft && lastleft >= lastDic;
+				const leftRecently = lastLeft && lastLeft >= lastDic;
 				if (!leftRecently && lastDic && (now-lastDic) < 60_000){
 					status = "reconnecting";
 				}
@@ -1342,10 +1374,6 @@ io.on("connection", async function(socket) {
 		//alpha server 1
 		let objectName = getObjectNameFromIndices(words, objectStartIndex, objectEndIndex);
 		let secondaryObjectName = getObjectNameFromIndices(words, secondaryObjectStartIndex, words.length - 1);
-		// let currentLobby = lobbies.find(r => r.name === socket.data.lobbyName);
-		// let gameRoom = currentLobby.gameRooms.find(r => r.name == socket.data.currentWorldRoomName);
-		// let response = '';
-		// console.log(objectName + " " + preposition + " ", secondaryObjectName);
 		if (['l', 'look'].includes(verb)) {
 			response = getRoomDescription(gameRoom);
 		}
@@ -1387,9 +1415,8 @@ io.on("connection", async function(socket) {
 
 			// 4. Now get the correct exit
 			let exit = gameRoom.exits.find(ex => ex.direction === verb);
-			if (!exit) response = "There is no exit in that direction.";
-
-			else if (exit.isLocked) response = "It's locked.";
+			if (!exit)  return "There is no exit in that direction.";
+			else if (exit.isLocked) return "It's locked.";
 
 			const destinationRoom = lobby.gameRooms.find(r => r.name === exit.destination);
 			if (!destinationRoom) return "Destination room not found.";
@@ -1655,6 +1682,11 @@ io.on("connection", async function(socket) {
 			}
 		}
 
+		const occupied = await countOcuupiedSlots(lobbyName);
+
+		if (occupied >= MAX_USERS_PER_LOBBY && !isReservedReconnectUser(user) && user.status !== "online")
+			return callback(false, `Lobby is full. (max ${MAX_USERS_PER_LOBBY}) `);
+
 		socket.data.name = user.username;
 		socket.data.lobbyName = lobbyName;
 		socket.data.currentWorldRoomName = user.currentWorldRoomName || INITIAL_WORLD_START_ROOM;
@@ -1708,10 +1740,7 @@ io.on("connection", async function(socket) {
 	socket.on("joinLobby", async function (lobbyName, username, token, callback) {
 		try{
 			let user = await getUserFromDB(username);
-			if (!user) {
-				token = await createUser({username, lobbyName, socketId: socket.id});
-				user = await getUserFromDB(username);
-			}else{
+			if (user) {
 				if (user.reconnectToken !== token) {
 					return callback(false, "Unauthorized.");
 				}
@@ -1720,14 +1749,32 @@ io.on("connection", async function(socket) {
 					if (oldSocket && oldSocket.connected){
 						return callback(false, "User already logged in.");
 					}
-				}
-				token = user.reconnectToken;	
+				}	
 			}
 
 			let lobby = await getLobbyFromDB(lobbyName);
 			if (!lobby) {
 				await createLobby({lobbyName, createdBy: username});
 				lobby = await getLobbyFromDB(lobbyName);
+			}
+
+			const occupied = await countOcuupiedSlots(lobbyName);
+
+			const cutoff = new Date(getReconnectCutoffMs());
+			const sameLobbyReserved = 
+				user && 
+				user.lobbyName === lobbyName && 
+				(user.status === "online" || (user.status === "reconnecting" && user.lastDisconnectAt && new Date(user.lastDisconnectAt) >= cutoff));
+
+			if (occupied >= MAX_USERS_PER_LOBBY && !sameLobbyReserved){
+				return callback(false, `Lobby is full. (max ${MAX_USERS_PER_LOBBY})`);
+			}
+
+			if (!user){
+				token = await createUser({username, lobbyName, socketId: socket.id});
+				user = await getUserFromDB(username);
+			} else {
+				token = user.reconnectToken;
 			}
 
 			socket.data.name = username;
@@ -1773,7 +1820,7 @@ io.on("connection", async function(socket) {
 			$set: {
 				socketId: null,
 				status: "offline",
-				leftAt: new Date(),
+				lastLeftAt: new Date(),
 				lastSeenAt: new Date()
 			}
 		});
@@ -1847,7 +1894,7 @@ io.on("connection", async function(socket) {
 			// const response = `You typed: ${cmd}`;
 			const response = await parseCommand(cmd);
 			// if (response) socket.emit("commandResponse", response);
-			if (response) await emitCommand(socket, lobbyName, username, command, response);
+			if (response) await emitCommand(socket, lobbyName, username, cmd, response);
 	
 			callback?.(true);
 		} catch (err) {
@@ -1909,7 +1956,8 @@ async function run() {
 	// Send a ping to confirm a successful connection
 	db = client.db("mudGame");
 	console.log("You successfully connected to MongoDB!");
-	
+	startReconnectExpiryJob();
+
 	server.listen(8080, function() {
 		console.log("Server with socket.io is ready.");
 	});
