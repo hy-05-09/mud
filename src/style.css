@@ -211,3 +211,82 @@ button:active {
 .text-command {
   color:#ffffff;
 }
+
+.commands-panel {
+  margin-top: 10px;
+  border-top: 1px solid #ddd;
+  padding-top: 8px;
+  color: black;
+}
+
+.commands-toggle {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #ccc;
+  background: #fafafa;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.commands-body {
+  margin-top: 8px;
+  border: 1px solid #ddd;
+  background: white;
+  padding: 8px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.commands-search {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  margin-bottom: 10px;
+}
+
+.commands-section {
+  margin-bottom: 12px;
+}
+
+.commands-section-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.command-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px;
+  border: 1px solid #eee;
+  margin-bottom: 6px;
+}
+
+.command-main {
+  flex: 1;
+  cursor: pointer;
+}
+
+.command-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.command-cmd {
+  font-family: monospace;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.command-desc {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.command-run {
+  padding: 6px 10px;
+  border: 1px solid #ccc;
+  background: #f5f5f5;
+  cursor: pointer;
+}

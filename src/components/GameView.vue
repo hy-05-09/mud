@@ -12,9 +12,57 @@ export default {
 		return {
 			inputText: "",
 			chatHistory: [],
+
 			userList: [],
 			maxPlayers: 4,
 			showOffline: false,
+
+			showCommandsPanel: false,
+			commandSearch: "",
+			commandsCatalog: [
+				{
+					title: "Basics",
+					items: [
+					{ label: "Look", cmd: "l", desc: "Show room description" },
+					{ label: "Inventory", cmd: "i", desc: "Show what you're carrying" },
+					{ label: "Help", cmd: "help", desc: "Show help text" },
+					],
+				},
+				{
+					title: "Movement",
+					items: [
+					{ label: "North", cmd: "n" },
+					{ label: "South", cmd: "s" },
+					{ label: "East", cmd: "e" },
+					{ label: "West", cmd: "w" },
+					],
+				},
+				{
+					title: "Inspect & Items",
+					items: [
+					{ label: "Examine <object>", cmd: "examine door", desc: "Inspect something" },
+					{ label: "Get <item>", cmd: "get axe", desc: "Pick up item in room" },
+					{ label: "Get <item> from <container>", cmd: "get front door key from mailbox" },
+					{ label: "Drop <item>", cmd: "drop axe" },
+					{ label: "Put <item> in <container>", cmd: "put milk jug in refrigerator" },
+					],
+				},
+				{
+					title: "Doors & Locks",
+					items: [
+					{ label: "Use <key> on <door>", cmd: "use front door key on front door" },
+					{ label: "Unlock <door> with <key>", cmd: "unlock front door with front door key" },
+					{ label: "Lock <door> with <key>", cmd: "lock front door with front door key" },
+					{ label: "Use keycard terminal", cmd: "use key card on terminal" },
+					],
+				},
+				{
+					title: "Chat",
+					items: [
+					{ label: 'Say "..."', cmd: "say hello everyone" },
+					],
+				},
+			],
 
 			username: null,
 			requestedUsername: "",
@@ -71,6 +119,14 @@ export default {
 					this.$refs.chatBox.scrollTop = this.$refs.chatBox.scrollHeight;
 				}
 			});
+		},
+		fillCommand(cmd){
+			this.inputText = cmd;
+			this.$nextTick(() => this.$refs?.inputBox?.focus?.());
+		},
+		runCommand(cmd){
+			this.inputText = cmd;
+			this.sendText();
 		},
 		sendText() {
 			const cmd = this.inputText?.trim();
@@ -137,6 +193,7 @@ export default {
 				localStorage.removeItem("mud_last_lobby");
 
 				this.username = null;
+				this.lobbyName = null;
 				this.requestedUsername = "";
 				this.requestedLobbyName = "";
 			});
@@ -198,7 +255,21 @@ export default {
 		},
 		offlineCount(){
 			return (this.userList || []).filter(u=>u.status==="offline").length;
-		}
+		},
+		filteredCatalog(){
+			const q = (this.commandSearch || "").trim().toLowerCase();
+			if (!q) return this.commandsCatalog;
+
+			return this.commandsCatalog
+				.map(sec => {
+					const items = sec.items.filter(it => {
+						const hay = `${it.label} ${it.cmd} ${it.desc || ""}`.toLowerCase();
+						return hay.includes(q);
+					});
+					return { ...sec, items};
+				})
+				.filter(sec => sec.items.length > 0);
+		},
 	}
 }
 </script>
@@ -251,6 +322,25 @@ export default {
 							{{user.name}} - (offline)
 						</p>
 					</template>
+
+					<div class="commands-panel">
+						<button class="commands-toggle" @click="showCommandsPanel = !showCommandsPanel">
+							Commands {{ showCommandsPanel ? "▴" : "▾"}}
+						</button>
+						<div v-if="showCommandsPanel" class="commands-body">
+							<input class="commands-search" type="text" v-model="commandSearch" placeholder="Search commands...">
+							<div v-for="section in filteredCatalog" :key="section.title" class="commands-section">
+								<div class="commands-section-title">{{ section.title }}</div>
+								<div v-for="item in section.items" :key="item.label" class="command-item">
+									<div class="command-main" @click="fillCommand(item.cmd)">
+										<div class="command-label">{{ item.label }}</div>
+										<div class="command-cmd">{{ item.cmd }}</div>
+										<div v-if="item.desc" class="command-desc">{{ item.desc }}</div>
+									</div>
+								</div>
+							</div>
+						</div>
+					</div>
 				</div>
 			</div>
 
@@ -259,7 +349,7 @@ export default {
 				autocomplete="off"
 				@submit.prevent="sendText"
 			>
-				<input id="inputText" type="text" v-model="inputText"/>
+				<input id="inputText" ref="inputBox" type="text" v-model="inputText"/>
 				<button id="sendButton" type="submit">Submit</button>
 			</form>
 			</div>
