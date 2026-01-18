@@ -933,10 +933,10 @@ async function createUser({username, lobbyName, socketId}) {
 	const reconnectToken = crypto.randomBytes(32).toString("hex");
 	await db.collection("users").insertOne({
 			username,
+			lobbyName,
 			status: "offline",
 			lastDisconnectAt: new Date(),
 			lastLeftAt: new Date(),
-			lobbyName,
 			currentWorldRoomName: INITIAL_WORLD_START_ROOM,
 			inventory: [],
 			socketId,
@@ -948,14 +948,14 @@ async function createUser({username, lobbyName, socketId}) {
 }
 
 //load existing user
-async function getUserFromDB(username) {
-	return db.collection("users").findOne({username});
+async function getUserFromDB(username, lobbyName) {
+	return db.collection("users").findOne({username, lobbyName});
 }
 
 //update user fields
-async function updateUser(username, updateDoc, options = {}){
+async function updateUser(username, lobbyName, updateDoc, options = {}){
 	return db.collection("users").updateOne(
-		{username},
+		{username, lobbyName},
 		updateDoc,
 		options
 	);
@@ -1085,7 +1085,7 @@ async function emitWhisper(socket, lobbyName, from, to, text){
 	socket.emit("logEntry", saved);
 
 	//receiver
-	const targetUser = await getUserFromDB(to);
+	const targetUser = await getUserFromDB(to, lobbyName);
 	const targetSocket = targetUser?.socketId ? io.sockets.sockets.get(targetUser.socketId) : null;
 
 	if (targetSocket?.connected && from !== to) targetSocket.emit("logEntry", saved);
@@ -1159,7 +1159,7 @@ function isReservedReconnectUser(user){
 	if (!user) return false;
 	if (user.status != "reconnecting") return false;
 	if (!user.lastDisconnectAt) return false;
-	return new Date(user.lastDisconnectAt).getTime >= getReconnectCutoffMs();
+	return new Date(user.lastDisconnectAt).getTime() >= getReconnectCutoffMs();
 }
 
 function startReconnectExpiryJob(){
@@ -1186,42 +1186,14 @@ function startReconnectExpiryJob(){
 io.on("connection", async function(socket) {
 
 	async function emitUserList(lobbyName) {
-		const lobby = await getLobbyFromDB(lobbyName);
-		if (!lobby) return;
+		const users = await db.collection("users").find({lobbyName}).toArray();
 
-		const now = Date.now();
-		const roster = [];
-
-		for (const username of lobby.users || []){
-			const u = await getUserFromDB(username);
-			if (!u) continue;
-
-			let online = false; 
-			if (u.socketId){
-				const s = io.sockets.sockets.get(u.socketId);
-				online = Boolean(s && s.connected);
-			}
-
-			let status = "offline";
-			if (online) status = "online";
-			else {
-				const lastDic = u.lastDisconnectAt ? new Date(u.lastDisconnectAt).getTime() : 0;
-				const lastLeft = u.lastLeftAt ? new Date(u.lastLeftAt).getTime : 0;
-
-				const leftRecently = lastLeft && lastLeft >= lastDic;
-				if (!leftRecently && lastDic && (now-lastDic) < 60_000){
-					status = "reconnecting";
-				}
-				else status = "offline";
-			}
-
-			roster.push({
-				name:u.username,
-				room: u.currentWorldRoomName ?? INITIAL_WORLD_DATA, 
-				status, 
-				lastSeenAt: u.lastSeenAt ?? null
-			})
-		}
+		const roster = users.map(u => ({
+			name: u.username,
+			room: u.currentWorldRoomName,
+			status: u.status,
+			lastSeenAt: u.lastSeenAt ?? null
+		}));
 		
 		io.to(lobbyName).emit("updateUserList", roster);
 	}
@@ -1284,7 +1256,7 @@ io.on("connection", async function(socket) {
 		const username = socket.data.name;
 		const lobbyName = socket.data.lobbyName;
 
-		let user = await getUserFromDB(username);
+		let user = await getUserFromDB(username, lobbyName);
 		if (!user) return "User not found.";
 
 		let lobby = await getLobbyFromDB(lobbyName);
@@ -1423,7 +1395,7 @@ io.on("connection", async function(socket) {
 
 			// 5. Update user position in DB
 			else {
-				await updateUser(username, { $set: {currentWorldRoomName: exit.destination}});
+				await updateUser(username, lobbyName, { $set: {currentWorldRoomName: exit.destination}});
 				socket.data.currentWorldRoomName = exit.destination;
 
 				// io.to(freshUser.lobbyName).emit("updateUserList", userList);
@@ -1480,7 +1452,7 @@ io.on("connection", async function(socket) {
 								let takenItem = container.inventory.splice(itemToTakeIndex, 1)[0];
 								// Push the item to the player's inventory
 								socket.data.inventory.push(takenItem);
-								await updateUser(username, {$set:{inventory: socket.data.inventory}});
+								await updateUser(username, lobbyName, {$set:{inventory: socket.data.inventory}});
 								response = "You took the " + takenItem.name;
 								// Remove the positionalPhrase from the item
 								takenItem.positionalPhrase = ''
@@ -1507,7 +1479,7 @@ io.on("connection", async function(socket) {
 							let takenItem = gameRoom.interactables.splice(itemToTakeIndex, 1)[0];
 							// Push the item to the player's inventory
 							socket.data.inventory.push(takenItem);
-							await updateUser(username, {$set:{inventory: socket.data.inventory}});
+							await updateUser(username, lobbyName, {$set:{inventory: socket.data.inventory}});
 							response = "You took the " + takenItem.name;
 							// Remove the positionalPhrase from the item
 							takenItem.positionalPhrase = '';
@@ -1533,7 +1505,7 @@ io.on("connection", async function(socket) {
 					// Push the item to the gameRoom
 					gameRoom.interactables.push(droppedItem);
 
-					await updateUser(username, {$set: {inventory: socket.data.inventory}});
+					await updateUser(username, lobbyName, {$set: {inventory: socket.data.inventory}});
 					await emitSystem(lobbyName, `${username} just dropped ${takenItem.name}.`, {excludeSocket:socket});
 					await updateLobby(lobbyName, { $set:{gameRooms: lobby.gameRooms}});
 					response = "You dropped the " + droppedItem.name + " on the ground.";
@@ -1560,7 +1532,7 @@ io.on("connection", async function(socket) {
 							let placedItem = socket.data.inventory.splice(itemToPlaceIndex, 1)[0];
 							// Push the item to the container
 							container.inventory.push(placedItem);
-							await updateUser(username, {$set: {inventory: socket.data.inventory}});
+							await updateUser(username, lobbyName, {$set: {inventory: socket.data.inventory}});
 							await emitSystem(lobbyName, `${username} just put ${takenItem.name} in the ${container.name}.`, {excludeSocket:socket});
 							await updateLobby(lobbyName, { $set:{gameRooms: lobby.gameRooms}});
 							response = "You put the " + placedItem.name + " in the " + container.name;
@@ -1665,11 +1637,9 @@ io.on("connection", async function(socket) {
 	socket.data.lobbyName = null;
 	socket.data.roomName = null;
 	
-	socket.on("reconnectUser", async (username, token, callback)=>{
-		const user = await getUserFromDB(username);
+	socket.on("reconnectUser", async (username, lobbyName, token, callback)=>{
+		const user = await getUserFromDB(username, lobbyName);
 		if (!user) return callback(false, "User not found");
-		
-		const lobbyName = user.lobbyName;
 
 		if (user.reconnectToken !== token) {
 			return callback(false, "Unauthorized.");
@@ -1694,11 +1664,10 @@ io.on("connection", async function(socket) {
 
 		socket.join(lobbyName);
 
-		await updateUser(username, {
+		await updateUser(username, lobbyName, {
 			$set: {socketId: socket.id, status: "online", lastSeenAt: new Date()},
 			$unset: {lastLeftAt: ""}
 		});
-		await updateLobby(lobbyName, {$addToSet:{users: username}});
 		await updateRoomState(lobbyName, user.currentWorldRoomName, {$addToSet:{username:username}});
 		await emitUserList(lobbyName);
 		// io.to(lobbyName).emit("userJoinedLobby", username);
@@ -1710,16 +1679,9 @@ io.on("connection", async function(socket) {
 		let username = socket.data.name;
 		let lobbyName = socket.data.lobbyName;
 
-		if (!username || !lobbyName) {
-			const user = await db.collection("users").findOne({socketId:socket.id});
-			if (user){
-				username = user.username;
-				lobbyName = user.lobbyName;
-			}
-		}
 		if (!username || !lobbyName) return;
 
-		await updateUser(username, {
+		await updateUser(username, lobbyName, {
 			$set:{
 				socketId: null,
 				status: "reconnecting",
@@ -1739,18 +1701,7 @@ io.on("connection", async function(socket) {
 
 	socket.on("joinLobby", async function (lobbyName, username, token, callback) {
 		try{
-			let user = await getUserFromDB(username);
-			if (user) {
-				if (user.reconnectToken !== token) {
-					return callback(false, "Unauthorized.");
-				}
-				if (user.socketId && user.socketId !== socket.id){
-					const oldSocket = io.sockets.sockets.get(user.socketId);
-					if (oldSocket && oldSocket.connected){
-						return callback(false, "User already logged in.");
-					}
-				}	
-			}
+			let user = await getUserFromDB(username, lobbyName);
 
 			let lobby = await getLobbyFromDB(lobbyName);
 			if (!lobby) {
@@ -1759,8 +1710,8 @@ io.on("connection", async function(socket) {
 			}
 
 			const occupied = await countOcuupiedSlots(lobbyName);
-
 			const cutoff = new Date(getReconnectCutoffMs());
+
 			const sameLobbyReserved = 
 				user && 
 				user.lobbyName === lobbyName && 
@@ -1772,8 +1723,17 @@ io.on("connection", async function(socket) {
 
 			if (!user){
 				token = await createUser({username, lobbyName, socketId: socket.id});
-				user = await getUserFromDB(username);
+				user = await getUserFromDB(username, lobbyName);
 			} else {
+				if (user.reconnectToken !== token) {
+					return callback(false, "Unauthorized.");
+				}
+				if (user.socketId && user.socketId !== socket.id){
+					const oldSocket = io.sockets.sockets.get(user.socketId);
+					if (oldSocket && oldSocket.connected){
+						return callback(false, "User already logged in.");
+					}
+				}	
 				token = user.reconnectToken;
 			}
 
@@ -1784,17 +1744,15 @@ io.on("connection", async function(socket) {
 
 			socket.join(lobbyName);
 
-			await updateUser(username, {
-				$set:{
-					lobbyName, 
+			await updateUser(username, lobbyName, {
+				$set:{ 
 					socketId: socket.id, 
 					status: "online", 
 					lastSeenAt: new Date()
 				},
 				$unset: {lastLeftAt: ""}
 			});
-			await updateLobby(lobbyName, { $addToSet: { users: username } });
-			
+
 			await emitUserList(lobbyName);
 			await emitSystem(lobbyName, `${username} joined the game.`);
 
@@ -1816,7 +1774,7 @@ io.on("connection", async function(socket) {
 
 		socket.leave(socket.data.lobbyName);
 
-		await updateUser(username, {
+		await updateUser(username, lobbyName, {
 			$set: {
 				socketId: null,
 				status: "offline",
@@ -1858,7 +1816,7 @@ io.on("connection", async function(socket) {
 			return;
 		}
 
-		const target = await getUserFromDB(targetName);
+		const target = await getUserFromDB(targetName, target.lobbyName);
 		if (!target) {
 			// socket.emit("messageSent", `User ${targetName} not found.`);
 			await emitCommand(socket, fromLobbyName, fromUsername, "whisper", `User ${targetName} not found.`)
@@ -1956,6 +1914,16 @@ async function run() {
 	// Send a ping to confirm a successful connection
 	db = client.db("mudGame");
 	console.log("You successfully connected to MongoDB!");
+
+	await db.collection("users").createIndex(
+		{username: 1, lobbyName: 1},
+		{unique: true}
+	);
+
+	await db.collection("users").createIndex(
+		{lobbyName: 1, status:1, lastDisconnectAt: 1}
+	);
+	
 	startReconnectExpiryJob();
 
 	server.listen(8080, function() {

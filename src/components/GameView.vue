@@ -143,7 +143,7 @@ export default {
 			const text = this.inputText?.trim();
 			if (!target || !text) return;
 
-			socket.emit("directMessage", {name: target.name}, text);
+			socket.emit("directMessage", {name: target.name, lobbyName: lobbyName}, text);
 			this.inputText = "";
 		},
 		requestHistory() {
@@ -220,7 +220,7 @@ export default {
 			const token = localStorage.getItem(`mud_token:${username}`);
 			if (!username || !token) return;
 
-			socket.emit("reconnectUser", username, token, (ok, msg) => {
+			socket.emit("reconnectUser", username, lobbyName, token, (ok, msg) => {
 				if (!ok) return;
 				this.username = username;
 				this.lobbyName = lobbyName;
