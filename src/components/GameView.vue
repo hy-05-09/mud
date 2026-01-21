@@ -71,7 +71,7 @@ export default {
 
 			historyLimit: 200,
 
-			debugFakeReconnecting: true
+			debugFakeReconnecting: false
 		};
 	},
 	methods: {
@@ -143,7 +143,7 @@ export default {
 			const text = this.inputText?.trim();
 			if (!target || !text) return;
 
-			socket.emit("directMessage", {name: target.name, lobbyName: lobbyName}, text);
+			socket.emit("directMessage", {name: target.name, lobbyName: this.lobbyName}, text);
 			this.inputText = "";
 		},
 		requestHistory() {
@@ -349,7 +349,7 @@ export default {
 				autocomplete="off"
 				@submit.prevent="sendText"
 			>
-				<input id="inputText" ref="inputBox" type="text" v-model="inputText"/>
+				<input id="inputText" ref="inputBox" type="text" v-model="inputText" autocomplete="off"/>
 				<button id="sendButton" type="submit">Submit</button>
 			</form>
 			</div>
@@ -357,7 +357,7 @@ export default {
 		<div v-if="!username" id="offline" class="overlay" style="position: absolute; inset: 0;">
 			<FORM class="login-panel" @submit.prevent="joinLobby">
 				<input v-model="requestedUsername" type="text" placeholder="Username" autocomplete="username"/> <br> 
-				<input v-model="requestedLobbyName" type="text" placeholder="Lobby Name" autocomplete="off"/> <br> <br>
+				<input v-model="requestedLobbyName" type="text" placeholder="Lobby Name" autocomplete="lobbyName"/> <br> <br>
 				<button type="submit">Join</button>
 			</FORM>
 		</div>
